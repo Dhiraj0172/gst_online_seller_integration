@@ -352,7 +352,7 @@ class TestGSTRules:
 from app.services.classification_service import (
     classify_b2b, classify_b2c, classify_cdnr, classify_cdnur,
     classify_nil_exempt, classify_transaction, classify_ecommerce,
-    classify_reverse_charge, determine_supply_type
+    classify_reverse_charge, determine_supply_type, classify_sez
 )
 
 class TestClassification:
@@ -404,12 +404,42 @@ class TestClassification:
     def test_nil_rated(self):
         txn = {'tax_rate': 0, 'item_type': ''}
         result = classify_nil_exempt(txn)
-        assert result == 'NIL'
+        assert result == 'NIL_UNREGISTERED'
 
     def test_exempt(self):
         txn = {'tax_rate': 0, 'item_type': 'Exempt'}
         result = classify_nil_exempt(txn)
-        assert result == 'EXEMPT'
+        assert result == 'EXEMPT_UNREGISTERED'
+
+    def test_nil_rated_registered(self):
+        txn = {'tax_rate': 0, 'item_type': 'Nil', 'customer_gstin': '29AALCS5765L1ZP'}
+        result = classify_nil_exempt(txn)
+        assert result == 'NIL_REGISTERED'
+
+    def test_exempt_registered(self):
+        txn = {'tax_rate': 0, 'item_type': 'Exempt', 'customer_gstin': '29AALCS5765L1ZP'}
+        result = classify_nil_exempt(txn)
+        assert result == 'EXEMPT_REGISTERED'
+
+    def test_nongst_registered(self):
+        txn = {'tax_rate': 5, 'item_type': 'Non-GST', 'customer_gstin': '29AALCS5765L1ZP'}
+        result = classify_nil_exempt(txn)
+        assert result == 'NONGST_REGISTERED'
+
+    def test_nongst_unregistered(self):
+        txn = {'tax_rate': 5, 'item_type': 'Non-GST', 'customer_gstin': ''}
+        result = classify_nil_exempt(txn)
+        assert result == 'NONGST_UNREGISTERED'
+
+    def test_sez_registered(self):
+        txn = {'sez_type': 'WPAY', 'customer_gstin': '29AALCS5765L1ZP'}
+        result = classify_sez(txn)
+        assert result == 'SEZ_REGISTERED'
+
+    def test_sez_unregistered(self):
+        txn = {'sez_type': 'WPAY', 'customer_gstin': ''}
+        result = classify_sez(txn)
+        assert result == 'SEZ_UNREGISTERED'
 
     def test_reverse_charge(self):
         assert classify_reverse_charge({'reverse_charge': True})

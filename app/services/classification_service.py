@@ -56,31 +56,40 @@ def classify_cdnur(transaction: Dict[str, Any]) -> bool:
     )
     return bool(is_note and (not gstin or len(gstin) != 15))
 
+def classify_sez(transaction: Dict[str, Any]) -> str:
+    """Check if transaction is to SEZ. Returns SEZ_REGISTERED or SEZ_UNREGISTERED."""
+    sez_type = transaction.get('sez_type')
+    if sez_type in ['WPAY', 'WOPAY']:
+        gstin = str(transaction.get('customer_gstin') or '')
+        if gstin and len(gstin) == 15:
+            return "SEZ_REGISTERED"
+        return "SEZ_UNREGISTERED"
+    return ""
+
 def classify_nil_exempt(transaction: Dict[str, Any]) -> Optional[str]:
-    """Classify as NIL, EXEMPT, or NONGST."""
+    """Classify as NIL, EXEMPT, or NONGST with recipient type."""
     item_type = str(transaction.get('item_type', '') or '').lower()
     supply_type = str(transaction.get('supply_type', '') or '').lower()
+    gstin = str(transaction.get('customer_gstin') or '')
+    is_registered = bool(gstin and len(gstin) == 15)
+    suffix = "_REGISTERED" if is_registered else "_UNREGISTERED"
     
     if 'exempt' in item_type or 'exempt' in supply_type or transaction.get('exempt_flag'):
-        return 'EXEMPT'
+        return 'EXEMPT' + suffix
     if 'non-gst' in item_type or 'nongst' in item_type or 'non-gst' in supply_type or transaction.get('non_gst_flag'):
-        return 'NONGST'
+        return 'NONGST' + suffix
     if 'nil' in item_type or 'nil' in supply_type or transaction.get('nil_rated_flag'):
-        return 'NIL'
+        return 'NIL' + suffix
         
     tax_rate = transaction.get('tax_rate')
     if tax_rate is not None and Decimal(str(tax_rate)) == 0 and not transaction.get('customer_gstin'):
-        return 'NIL'
+        return 'NIL_UNREGISTERED'
         
     return None
 
 def classify_export(transaction: Dict[str, Any]) -> bool:
     """Check if transaction is an export."""
     return transaction.get('export_type') in ['WPAY', 'WOPAY']
-
-def classify_sez(transaction: Dict[str, Any]) -> bool:
-    """Check if transaction is to SEZ."""
-    return transaction.get('sez_type') in ['WPAY', 'WOPAY']
 
 def classify_reverse_charge(transaction: Dict[str, Any]) -> bool:
     """Check if reverse charge applies."""
@@ -94,8 +103,9 @@ def classify_transaction(transaction: Dict[str, Any], profile: Any, return_perio
     """Determine primary classification for a transaction."""
     if classify_export(transaction):
         return "EXPORT"
-    if classify_sez(transaction):
-        return "SEZ"
+    sez_class = classify_sez(transaction)
+    if sez_class:
+        return sez_class
     if classify_cdnr(transaction):
         return "CDNR"
     if classify_cdnur(transaction):

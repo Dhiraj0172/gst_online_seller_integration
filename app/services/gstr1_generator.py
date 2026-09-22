@@ -151,28 +151,82 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
                 })
                 
         elif classification == 'B2CS':
+            # Determine supply type for validator
+            supplier_state = profile.gstin[:2] if profile.gstin else ''
+            sply_ty = 'INTER' if pos_val != supplier_state else 'INTRA'
             b2cs_data.append({
-                "typ": "OE",  # Other
+                "sply_ty": sply_ty,
                 "pos": pos_val,
+                "typ": "OE",  # Other
                 "rt": float(tx.tax_rate or 0),
                 "txval": float(txval),
+                "iamt": float(tx.igst_amount or 0),
+                "camt": float(tx.cgst_amount or 0),
+                "samt": float(tx.sgst_amount or 0),
                 "csamt": float(tx.cess_amount or 0)
             })
             
         elif classification == 'B2CL':
-            b2cl_data.append({
-                "ctin": tx.customer_gstin or "",
-                "inum": tx.invoice_number,
-                "idt": format_date_gst(tx.invoice_date) if tx.invoice_date else "",
-                "val": float(tx.invoice_value or 0),
-                "pos": pos_val,
-                "rt": float(tx.tax_rate or 0),
-                "txval": float(txval),
-                "csamt": float(tx.cess_amount or 0)
-            })
+            # Official GSTN B2CL structure: grouped by POS, then invoices with itms
+            supplier_state = profile.gstin[:2] if profile.gstin else ''
+            sply_ty = 'INTER' if pos_val != supplier_state else 'INTRA'
+            
+            # Find or create POS group
+            pos_group = None
+            for g in b2cl_data:
+                if g["pos"] == pos_val:
+                    pos_group = g
+                    break
+            if not pos_group:
+                pos_group = {
+                    "pos": pos_val,
+                    "inv": []
+                }
+                b2cl_data.append(pos_group)
+            
+            # Check if invoice already exists in this POS group
+            inv_num = tx.invoice_number
+            existing_inv = None
+            for inv in pos_group["inv"]:
+                if inv["inum"] == inv_num:
+                    existing_inv = inv
+                    break
+            
+            if existing_inv:
+                existing_inv["itms"].append({
+                    "num": len(existing_inv["itms"]) + 1,
+                    "itm_det": {
+                        "rt": float(tx.tax_rate or 0),
+                        "txval": float(txval),
+                        "iamt": float(tx.igst_amount or 0),
+                        "camt": float(tx.cgst_amount or 0),
+                        "samt": float(tx.sgst_amount or 0),
+                        "csamt": float(tx.cess_amount or 0)
+                    }
+                })
+            else:
+                pos_group["inv"].append({
+                    "inum": inv_num,
+                    "idt": format_date_gst(tx.invoice_date) if tx.invoice_date else "",
+                    "val": float(tx.invoice_value or 0),
+                    "etin": tx.ecommerce_gstin or "",
+                    "itms": [{
+                        "num": 1,
+                        "itm_det": {
+                            "rt": float(tx.tax_rate or 0),
+                            "txval": float(txval),
+                            "iamt": float(tx.igst_amount or 0),
+                            "camt": float(tx.cgst_amount or 0),
+                            "samt": float(tx.sgst_amount or 0),
+                            "csamt": float(tx.cess_amount or 0)
+                        }
+                    }]
+                })
             
         elif classification in ('CDNR', 'CDNUR'):
             is_registered = classification == 'CDNR'
+            # Determine reverse charge for CDNR
+            rchrg = tx.reverse_charge or "N"
             note_obj = {
                 "ntty": tx.note_type[0].upper() if tx.note_type else "C",  # C or D
                 "nt_num": tx.note_number,
@@ -181,16 +235,44 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
                 "in_dt": format_date_gst(tx.original_invoice_date) if tx.original_invoice_date else "",
                 "val": float(tx.invoice_value or 0),
                 "pos": pos_val,
+                "rchrg": rchrg,
                 "ntty": tx.note_type[0].upper() if tx.note_type else "C",
                 "rt": float(tx.tax_rate or 0),
                 "txval": float(txval),
+                "iamt": float(tx.igst_amount or 0),
+                "camt": float(tx.cgst_amount or 0),
+                "samt": float(tx.sgst_amount or 0),
                 "csamt": float(tx.cess_amount or 0)
             }
             if is_registered:
                 note_obj["ctin"] = tx.customer_gstin
-                cdnr_data.append(note_obj)
+                # Find or create ctin group
+                ctin_group = None
+                for g in cdnr_data:
+                    if g["ctin"] == note_obj["ctin"]:
+                        ctin_group = g
+                        break
+                if not ctin_group:
+                    ctin_group = {
+                        "ctin": note_obj["ctin"],
+                        "nt": []
+                    }
+                    cdnr_data.append(ctin_group)
+                ctin_group["nt"].append(note_obj)
             else:
-                cdnur_data.append(note_obj)
+                # CDNUR - flat list with nt array at top level (no ctin)
+                # Check if we already have a cdnur group without ctin
+                cdnur_group = None
+                for g in cdnur_data:
+                    if "ctin" not in g:
+                        cdnur_group = g
+                        break
+                if not cdnur_group:
+                    cdnur_group = {
+                        "nt": []
+                    }
+                    cdnur_data.append(cdnur_group)
+                cdnur_group["nt"].append(note_obj)
                 
         elif classification in ('EXPORT', 'SEZ'):
             exp_data.append({
@@ -211,7 +293,7 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
                 nil_data[nil_key] += txval
                 
         # HSN aggregation
-        hsn_key = (tx.hsn_sac or "", tx.uqc or "OTH", tx.tax_rate or 0)
+        hsn_key = (tx.hsn_sac or "", tx.uqc or "OTH", tx.tax_rate or 0, classification)
         if hsn_key not in hsn_agg:
             hsn_agg[hsn_key] = {
                 "hsn_sc": hsn_key[0],
@@ -224,7 +306,8 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
                 "camt": Decimal('0'),
                 "samt": Decimal('0'),
                 "csamt": Decimal('0'),
-                "rt": hsn_key[2]
+                "rt": hsn_key[2],
+                "classification": hsn_key[3]
             }
         hsn_agg[hsn_key]["qty"] += Decimal(str(tx.quantity or 0))
         hsn_agg[hsn_key]["val"] += txval
@@ -235,40 +318,103 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
         hsn_agg[hsn_key]["csamt"] += Decimal(str(tx.cess_amount or 0))
     
     # Build final structure
-    json_data = {
-        "gstin": profile.gstin,
-        "fp": return_period,
-        "gt": float(total_taxable + total_tax),
-        "cur_gt": float(total_taxable + total_tax),
-        "b2b": list(b2b_groups.values()),
-        "b2cs": b2cs_data,
-        "cdnr": cdnr_data,
-        "cdnur": cdnur_data,
-        "exp": exp_data,
-        "nil": {
-            "nil_amt": float(nil_data["nil"]),
-            "expt_amt": float(nil_data["exempt"]),
-            "ng_amt": float(nil_data["non_gst"])
-        },
-        "hsn": {"data": [
-            {
-                "hsn_sc": v["hsn_sc"],
-                "desc": v["desc"],
-                "uqc": v["uqc"],
-                "qty": float(v["qty"]),
-                "val": float(v["val"]),
-                "txval": float(v["txval"]),
-                "iamt": float(v["iamt"]),
-                "camt": float(v["camt"]),
-                "samt": float(v["samt"]),
-                "csamt": float(v["csamt"]),
-                "rt": v["rt"]
-            } for v in hsn_agg.values()
-        ]},
-        "doc_issue": {"doc_det": []}
-    }
-    
-    # Add B2CL if applicable
+        json_data = {
+            "gstin": profile.gstin,
+            "fp": return_period,
+            "gt": float(total_taxable + total_tax),
+            "cur_gt": float(total_taxable + total_tax),
+            "b2b": list(b2b_groups.values()),
+            "b2cs": b2cs_data,
+            "cdnr": cdnr_data,
+            "cdnur": cdnur_data,
+            "exp": exp_data,
+            "nil": {
+                "nil_amt": float(nil_data["nil"]),
+                "expt_amt": float(nil_data["exempt"]),
+                "ng_amt": float(nil_data["non_gst"])
+            },
+            "hsn": {"data": []},
+            "doc_issue": {"doc_det": []}
+        }
+
+        # Handle HSN reporting mode
+        hsn_reporting_mode = rules.get('hsn_reporting_mode', 'combined')
+        if hsn_reporting_mode == 'separate_b2b_b2c':
+            # Build separate B2B and B2C HSN data using authoritative classification
+            # Official GSTN HSN validation advisory:
+            # - B2B HSN: B2B, B2BA, CDNR, SEZ_REGISTERED, NIL_REGISTERED, EXEMPT_REGISTERED, NONGST_REGISTERED (registered recipient tables)
+            # - B2C HSN: B2CS, B2CL, B2CLA, B2CSA, CDNUR, EXPORT, SEZ_UNREGISTERED, NIL_UNREGISTERED, EXEMPT_UNREGISTERED, NONGST_UNREGISTERED (unregistered recipient tables)
+            hsn_b2b_data = []
+            hsn_b2c_data = []
+            for v in hsn_agg.values():
+                # Use the authoritative classification from transaction pipeline
+                cls = v.get("classification", "").upper()
+                # B2B HSN covers registered-recipient tables
+                if cls in ('B2B', 'B2BA', 'CDNR', 'SEZ_REGISTERED', 'NIL_REGISTERED', 'EXEMPT_REGISTERED', 'NONGST_REGISTERED'):
+                    hsn_b2b_data.append({
+                        "hsn_sc": v["hsn_sc"],
+                        "desc": v["desc"],
+                        "uqc": v["uqc"],
+                        "qty": float(v["qty"]),
+                        "val": float(v["val"]),
+                        "txval": float(v["txval"]),
+                        "iamt": float(v["iamt"]),
+                        "camt": float(v["camt"]),
+                        "samt": float(v["samt"]),
+                        "csamt": float(v["csamt"]),
+                        "rt": v["rt"]
+                    })
+                # B2C HSN covers unregistered-recipient tables
+                elif cls in ('B2CS', 'B2CL', 'B2CLA', 'B2CSA', 'CDNUR', 'EXPORT', 'SEZ_UNREGISTERED', 'NIL_UNREGISTERED', 'EXEMPT_UNREGISTERED', 'NONGST_UNREGISTERED'):
+                    hsn_b2c_data.append({
+                        "hsn_sc": v["hsn_sc"],
+                        "desc": v["desc"],
+                        "uqc": v["uqc"],
+                        "qty": float(v["qty"]),
+                        "val": float(v["val"]),
+                        "txval": float(v["txval"]),
+                        "iamt": float(v["iamt"]),
+                        "camt": float(v["camt"]),
+                        "samt": float(v["samt"]),
+                        "csamt": float(v["csamt"]),
+                        "rt": v["rt"]
+                    })
+                else:
+                    # Unknown classification - default to B2C but log for review
+                    hsn_b2c_data.append({
+                        "hsn_sc": v["hsn_sc"],
+                        "desc": v["desc"],
+                        "uqc": v["uqc"],
+                        "qty": float(v["qty"]),
+                        "val": float(v["val"]),
+                        "txval": float(v["txval"]),
+                        "iamt": float(v["iamt"]),
+                        "camt": float(v["camt"]),
+                        "samt": float(v["samt"]),
+                        "csamt": float(v["csamt"]),
+                        "rt": v["rt"]
+                    })
+            json_data["hsn"]["data"] = hsn_b2b_data
+            json_data["hsnb2c"] = {"data": hsn_b2c_data}
+        else:
+            # Combined mode - all in hsn
+            json_data["hsn"]["data"] = [
+                {
+                    "hsn_sc": v["hsn_sc"],
+                    "desc": v["desc"],
+                    "uqc": v["uqc"],
+                    "qty": float(v["qty"]),
+                    "val": float(v["val"]),
+                    "txval": float(v["txval"]),
+                    "iamt": float(v["iamt"]),
+                    "camt": float(v["camt"]),
+                    "samt": float(v["samt"]),
+                    "csamt": float(v["csamt"]),
+                    "rt": v["rt"]
+                } for v in hsn_agg.values()
+            ]
+
+        # Add B2CL if applicable
     if b2cl_data:
         json_data["b2cl"] = b2cl_data
     

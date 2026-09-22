@@ -561,8 +561,16 @@ def run_smoke_test():
                         json_b2b_taxable += Decimal(str(det.get('txval', 0)))
 
             json_b2cs_taxable = sum(Decimal(str(item.get('txval', 0))) for item in gstr1_json_obj.get('b2cs', []))
-            json_cdnr_taxable = sum(Decimal(str(item.get('txval', 0))) for item in gstr1_json_obj.get('cdnr', []))
-            json_cdnur_taxable = sum(Decimal(str(item.get('txval', 0))) for item in gstr1_json_obj.get('cdnur', []))
+            # CDNR: structure is [{"ctin": "...", "nt": [...]}] - sum txval from nt array
+            json_cdnr_taxable = Decimal('0.00')
+            for cdnr_group in gstr1_json_obj.get('cdnr', []):
+                for nt in cdnr_group.get('nt', []):
+                    json_cdnr_taxable += Decimal(str(nt.get('txval', 0)))
+            # CDNUR: structure is [{"nt": [...]}] - sum txval from nt array
+            json_cdnur_taxable = Decimal('0.00')
+            for cdnur_group in gstr1_json_obj.get('cdnur', []):
+                for nt in cdnur_group.get('nt', []):
+                    json_cdnur_taxable += Decimal(str(nt.get('txval', 0)))
             json_total_taxable = json_b2b_taxable + json_b2cs_taxable + json_cdnr_taxable + json_cdnur_taxable
 
             ctx['source_totals'] = {

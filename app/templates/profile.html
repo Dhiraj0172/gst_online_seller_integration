@@ -1,0 +1,84 @@
+{% extends 'base.html' %}
+{% block title %}GST Profile - GST Online Seller{% endblock %}
+{% block content %}
+<div class="row">
+    <div class="col-md-4">
+        <div class="card shadow">
+            <div class="card-header bg-white">
+                <h5 class="mb-0">Add/Edit Profile</h5>
+            </div>
+            <div class="card-body">
+                <form id="profile-form" method="POST">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="mb-3">
+                        <label class="form-label">GSTIN</label>
+                        <input type="text" class="form-control" id="gstin" name="gstin" maxlength="15" required>
+                        <div class="invalid-feedback">Invalid GSTIN format.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Legal Name</label>
+                        <input type="text" class="form-control" name="legal_name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Trade Name</label>
+                        <input type="text" class="form-control" name="trade_name">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">State</label>
+                        <select class="form-select" id="state" name="state" required>
+                            <option value="">Select State</option>
+                            <option value="27">Maharashtra (27)</option>
+                            <option value="29">Karnataka (29)</option>
+                            <!-- More states -->
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Filing Frequency</label>
+                        <select class="form-select" name="frequency">
+                            <option value="Monthly">Monthly</option>
+                            <option value="Quarterly">Quarterly</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Save Profile</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <div class="card shadow">
+            <div class="card-header bg-white">
+                <h5 class="mb-0">Saved Profiles</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>GSTIN</th>
+                                <th>Legal Name</th>
+                                <th>State</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for profile in profiles|default([]) %}
+                            <tr>
+                                <td>{{ profile.gstin }}</td>
+                                <td>{{ profile.legal_name }}</td>
+                                <td>{{ profile.state }}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary"><i class="fas fa-edit"></i></button>
+                                    <button class="btn btn-sm btn-outline-danger"><i class="fas fa-trash"></i></button>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="4" class="text-center">No profiles found.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block title %}Errors - GST Online Seller{% endblock %}
+{% block content %}
+<h2 class="mb-4">Validation Errors</h2>
+<div class="card shadow">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Invoice No</th>
+                        <th>Field</th>
+                        <th>Error</th>
+                        <th>Severity</th>
+                        <th>Suggested Fix</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td colspan="5" class="text-center">No errors found</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

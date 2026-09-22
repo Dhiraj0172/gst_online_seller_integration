@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% block title %}TCS Reconcile - GST Online Seller{% endblock %}
+{% block content %}
+<h2 class="mb-4">TCS Reconciliation</h2>
+<div class="card shadow mb-4">
+    <div class="card-body">
+        <div class="row align-items-end">
+            <div class="col-md-6">
+                <label class="form-label">Upload Portal TCS Report</label>
+                <input type="file" class="form-control">
+            </div>
+            <div class="col-md-2">
+                <button class="btn btn-primary w-100">Reconcile</button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="card shadow">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>State</th>
+                        <th>Our Taxable</th>
+                        <th>Portal Taxable</th>
+                        <th>Our TCS</th>
+                        <th>Portal TCS</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td colspan="6" class="text-center">No reconciliation data</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

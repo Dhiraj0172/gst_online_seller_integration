@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+{% block title %}Manage Data - GST Online Seller{% endblock %}
+{% block content %}
+<h2 class="mb-4">Manage Statement Data</h2>
+
+<ul class="nav nav-tabs mb-3" id="statementTabs">
+    <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#b2b">B2B</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#b2c">B2C</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#cdnr">CDNR</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#hsn">HSN</a></li>
+</ul>
+
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="b2b">
+        <div class="card shadow">
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-3">
+                    <div>
+                        <button class="btn btn-sm btn-outline-secondary">Export</button>
+                        <button class="btn btn-sm btn-outline-danger">Bulk Delete</button>
+                    </div>
+                    <input type="text" class="form-control form-control-sm w-25" placeholder="Search...">
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-bordered table-hover align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th><input type="checkbox"></th>
+                                <th>Recipient GSTIN</th>
+                                <th>Invoice No</th>
+                                <th>Date</th>
+                                <th>Value</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Data rows -->
+                            <tr>
+                                <td colspan="7" class="text-center">No data available</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <!-- Pagination -->
+            </div>
+        </div>
+    </div>
+    <!-- Other tabs would be similar -->
+</div>
+{% endblock %}

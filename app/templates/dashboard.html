@@ -1,0 +1,103 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard - GST Online Seller{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Dashboard</h2>
+    <div>
+        <a href="{{ url_for('imports.import_page') }}" class="btn btn-primary"><i class="fas fa-upload me-1"></i> Import Data</a>
+        <a href="{{ url_for('generate.index') }}" class="btn btn-success"><i class="fas fa-file-export me-1"></i> Generate GSTR-1</a>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card bg-primary text-white shadow h-100">
+            <div class="card-body">
+                <h6>Total Invoices</h6>
+                <h3>{{ stats.total_invoices|default(0) }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-info text-white shadow h-100">
+            <div class="card-body">
+                <h6>Taxable Value</h6>
+                <h3>₹{{ stats.taxable_value|default('0.00') }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-warning text-white shadow h-100">
+            <div class="card-body">
+                <h6>Total Tax</h6>
+                <h3>₹{{ stats.total_tax|default('0.00') }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-success text-white shadow h-100">
+            <div class="card-body">
+                <h6>GSTR-1 Status</h6>
+                <h3>{{ stats.gstr1_status|default('Pending') }}</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-6 mb-4">
+        <div class="card shadow h-100">
+            <div class="card-header bg-white">
+                <h5 class="mb-0">Classification Breakdown</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        B2B Invoices
+                        <span class="badge bg-primary rounded-pill">{{ breakdown.b2b|default(0) }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        B2C Invoices
+                        <span class="badge bg-primary rounded-pill">{{ breakdown.b2c|default(0) }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        CDNR
+                        <span class="badge bg-primary rounded-pill">{{ breakdown.cdnr|default(0) }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        Nil/Exempt
+                        <span class="badge bg-primary rounded-pill">{{ breakdown.nil|default(0) }}</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 mb-4">
+        <div class="card shadow h-100">
+            <div class="card-header bg-white">
+                <h5 class="mb-0">Tax Summary</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        CGST
+                        <span>₹{{ tax_summary.cgst|default('0.00') }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        SGST
+                        <span>₹{{ tax_summary.sgst|default('0.00') }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        IGST
+                        <span>₹{{ tax_summary.igst|default('0.00') }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        Cess
+                        <span>₹{{ tax_summary.cess|default('0.00') }}</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

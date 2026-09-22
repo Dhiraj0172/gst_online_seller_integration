@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime logs
+logs/
+*.log
+
+# Local databases and runtime instance files
+instance/*.db
+instance/*.sqlite
+instance/*.sqlite3
+instance/*.db-journal
+instance/*.db-wal
+instance/*.db-shm
+
+# Temporary uploads and generated runtime artifacts
+uploads/*
+!uploads/.gitkeep
+exports/*
+!exports/.gitkeep
+generated/*
+!generated/.gitkeep
+
+# Environment and virtualenvs
+.env
+.venv/
+venv/
+ENV/
+
+# OS / Editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

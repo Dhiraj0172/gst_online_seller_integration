@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% block title %}Import History - GST Online Seller{% endblock %}
+{% block content %}
+<h2 class="mb-4">Import History</h2>
+<div class="card shadow">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Platform</th>
+                        <th>File Name</th>
+                        <th>Status</th>
+                        <th>Rows Processed</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if history %}
+                        {% for item in history %}
+                        <tr>
+                            <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '' }}</td>
+                            <td>{{ item.platform_name }}</td>
+                            <td>{{ item.file_name }}</td>
+                            <td><span class="badge bg-success">{{ item.processing_status }}</span></td>
+                            <td>{{ item.total_rows }}</td>
+                            <td><a href="{{ url_for('imports.detail', id=item.id) }}" class="btn btn-sm btn-outline-info">Detail</a></td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr><td colspan="6" class="text-center">No history available</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

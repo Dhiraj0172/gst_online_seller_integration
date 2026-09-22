@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+{% block title %}Generate GSTR-1 - GST Online Seller{% endblock %}
+{% block content %}
+<h2 class="mb-4">Generate GSTR-1</h2>
+<div class="row">
+    <div class="col-md-6">
+        <div class="card shadow">
+            <div class="card-body">
+                <h5 class="card-title">Pre-generation Checklist</h5>
+                <ul class="list-group list-group-flush mb-3">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        Errors resolved
+                        <span class="badge bg-success rounded-pill"><i class="fas fa-check"></i></span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        TCS Reconciled
+                        <span class="badge bg-warning rounded-pill"><i class="fas fa-exclamation"></i></span>
+                    </li>
+                </ul>
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" id="includeHsn" checked>
+                    <label class="form-check-label" for="includeHsn">Include HSN details</label>
+                </div>
+                <button class="btn btn-success w-100" id="generateBtn">Generate Return Files</button>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card shadow h-100" id="resultCard" style="display: none;">
+            <div class="card-body text-center">
+                <h5 class="card-title text-success"><i class="fas fa-check-circle fa-2x mb-2"></i><br>Generation Complete</h5>
+                <div class="mt-4">
+                    <a href="#" class="btn btn-outline-primary mb-2 w-75"><i class="fas fa-file-excel me-2"></i>Download Excel</a>
+                    <a href="#" class="btn btn-outline-info mb-2 w-75"><i class="fas fa-file-code me-2"></i>Download JSON</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

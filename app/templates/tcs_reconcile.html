@@ -1,36 +1,139 @@
 {% extends 'base.html' %}
 {% block title %}TCS Reconcile - GST Online Seller{% endblock %}
 {% block content %}
-<h2 class="mb-4">TCS Reconciliation</h2>
-<div class="card shadow mb-4">
-    <div class="card-body">
-        <div class="row align-items-end">
-            <div class="col-md-6">
-                <label class="form-label">Upload Portal TCS Report</label>
-                <input type="file" class="form-control">
-            </div>
-            <div class="col-md-2">
-                <button class="btn btn-primary w-100">Reconcile</button>
-            </div>
-        </div>
+<div class="row mb-4">
+    <div class="col-md-8">
+        <h2>TCS Reconciliation</h2>
+    </div>
+    <div class="col-md-4 text-end">
+        <a href="{{ url_for('imports.import_page') }}" class="btn btn-outline-secondary">Import Marketplace Data</a>
     </div>
 </div>
+
+<!-- Upload Form -->
+<div class="card shadow mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Upload Portal TCS Report</h5>
+    </div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('tcs.upload') }}" enctype="multipart/form-data">
+            <div class="row align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label">Return Period</label>
+                    <input type="text" class="form-control" name="return_period" placeholder="MMYYYY (e.g., 012025)" required>
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label">Portal TCS Report (Excel)</label>
+                    <input type="file" class="form-control" name="file" accept=".xlsx,.xls" required>
+                    <div class="form-text">Supports GSTR-8 (state-wise) and Marketplace TCS certificates (e-commerce GSTIN-wise)</div>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-primary w-100">Upload & Import</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Reconcile Action -->
+<div class="card shadow mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Run Reconciliation</h5>
+    </div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('tcs.reconcile') }}">
+            <div class="row align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label">Return Period</label>
+                    <input type="text" class="form-control" name="return_period" placeholder="MMYYYY (e.g., 012025)" required>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-success w-100">Run Reconciliation</button>
+                </div>
+                <div class="col-md-5">
+                    <div class="form-text">Calculates TCS on Section 52 net taxable value using period-aware rates</div>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results Table -->
 <div class="card shadow">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Reconciliation Results</h5>
+        <div>
+            <a href="{{ url_for('tcs.export', return_period=reconciliations[0].return_period if reconciliations else '') }}" class="btn btn-outline-primary btn-sm">
+                <i class="fas fa-download me-1"></i> Export CSV
+            </a>
+        </div>
+    </div>
     <div class="card-body">
         <div class="table-responsive">
-            <table class="table">
-                <thead>
+            <table class="table table-hover" id="tcsTable">
+                <thead class="table-light">
                     <tr>
                         <th>State</th>
-                        <th>Our Taxable</th>
+                        <th>E-Commerce GSTIN</th>
+                        <th>Our Net Taxable</th>
                         <th>Portal Taxable</th>
+                        <th>Diff Taxable</th>
                         <th>Our TCS</th>
                         <th>Portal TCS</th>
+                        <th>Diff TCS</th>
+                        <th>CGST / SGST / IGST</th>
                         <th>Status</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr><td colspan="6" class="text-center">No reconciliation data</td></tr>
+                    {% if reconciliations %}
+                        {% for r in reconciliations %}
+                        <tr class="{{ 'table-warning' if r.match_status == 'MISMATCH' else 'table-success' if r.match_status == 'MATCHED' else 'table-info' if r.match_status == 'AMBIGUOUS' else 'table-danger' }}">
+                            <td>{{ r.state_code }} - {{ r.state_name }}</td>
+                            <td>{{ r.ecommerce_gstin or '<span class="text-muted">State-level</span>' | safe }}</td>
+                            <td>{{ "{:,.2f}".format(r.our_net_taxable_value or 0) }}</td>
+                            <td>{{ "{:,.2f}".format(r.portal_taxable_value or 0) }}</td>
+                            <td class="{{ 'text-danger' if (r.difference_taxable or 0) > 1 else '' }}">{{ "{:,.2f}".format(r.difference_taxable or 0) }}</td>
+                            <td>{{ "{:,.2f}".format(r.our_calculated_tcs or 0) }}</td>
+                            <td>{{ "{:,.2f}".format(r.portal_tcs or 0) }}</td>
+                            <td class="{{ 'text-danger' if (r.difference_tcs or 0) > 1 else '' }}">{{ "{:,.2f}".format(r.difference_tcs or 0) }}</td>
+                            <td>
+                                <small>C: {{ "{:,.2f}".format(r.our_calculated_cgst or 0) }} / {{ "{:,.2f}".format(r.portal_cgst_tcs or 0) }}<br>
+                                S: {{ "{:,.2f}".format(r.our_calculated_sgst or 0) }} / {{ "{:,.2f}".format(r.portal_sgst_tcs or 0) }}<br>
+                                I: {{ "{:,.2f}".format(r.our_calculated_igst or 0) }} / {{ "{:,.2f}".format(r.portal_igst_tcs or 0) }}</small>
+                            </td>
+                            <td>
+                                <span class="badge bg-{{ 'success' if r.match_status == 'MATCHED' else 'danger' if r.match_status == 'MISMATCH' else 'warning' if r.match_status == 'AMBIGUOUS' else 'secondary' }}">
+                                    {{ r.match_status }}
+                                </span>
+                                {% if r.ambiguity_details %}
+                                <br><small class="text-warning">AMBIGUOUS: {{ r.ambiguity_details }}</small>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if r.match_status in ['MISMATCH', 'AMBIGUOUS'] %}
+                                <form method="POST" action="{{ url_for('tcs.adjust', id=r.id) }}" class="d-inline">
+                                    <input type="hidden" name="adjustment_type" value="ACCEPT_PORTAL">
+                                    <input type="hidden" name="notes" value="Accepted portal values via UI">
+                                    <button type="submit" class="btn btn-sm btn-outline-primary" title="Accept Portal">Portal</button>
+                                </form>
+                                <form method="POST" action="{{ url_for('tcs.adjust', id=r.id) }}" class="d-inline ms-1">
+                                    <input type="hidden" name="adjustment_type" value="ACCEPT_INTERNAL">
+                                    <input type="hidden" name="notes" value="Accepted internal values via UI">
+                                    <button type="submit" class="btn btn-sm btn-outline-success" title="Accept Internal">Internal</button>
+                                </form>
+                                {% elif r.is_adjusted %}
+                                <span class="badge bg-info">Adjusted</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr>
+                            <td colspan="11" class="text-center text-muted">No reconciliation data. Upload a portal report and run reconciliation.</td>
+                        </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>

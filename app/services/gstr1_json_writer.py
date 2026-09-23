@@ -14,37 +14,45 @@ class GSTR1JsonEncoder(json.JSONEncoder):
         return super().default(obj)
 
 class GSTR1JsonWriter:
+    # All official GSTN GSTR-1 tables, including amendments
+    TABLES = [
+        "b2b", "b2ba", "b2cl", "b2cla", "b2cs", "b2csa",
+        "cdnr", "cdnra", "cdnur", "cdnura",
+        "exp", "expa",
+        "nil", "hsn", "doc_issue"
+    ]
+
     @staticmethod
     def generate_json(data: Dict[str, Any], output_path: str) -> str:
         """
         Generates the GSTR-1 JSON file based on the provided data dictionary.
         """
         json_data = {}
-        
+
         # Top-level fields
         json_data["gstin"] = data.get("gstin", "")
         json_data["fp"] = data.get("fp", "")
-        
+
         if "gt" in data:
             json_data["gt"] = data["gt"]
         if "cur_gt" in data:
             json_data["cur_gt"] = data["cur_gt"]
-            
-        # Tables
-        for table in ["b2b", "b2cl", "b2cs", "cdnr", "cdnur", "exp", "nil", "hsn", "doc_issue"]:
+
+        # Tables - include all official GSTN tables plus amendments
+        for table in GSTR1JsonWriter.TABLES:
             if table in data and data[table]:
                 json_data[table] = data[table]
 
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(
-                json_data, 
-                f, 
-                cls=GSTR1JsonEncoder, 
-                indent=2, 
-                ensure_ascii=False, 
+                json_data,
+                f,
+                cls=GSTR1JsonEncoder,
+                indent=2,
+                ensure_ascii=False,
                 sort_keys=True
             )
-            
+
         return output_path
 
 def generate_gstr1_json(data: Dict[str, Any], output_path: str) -> str:

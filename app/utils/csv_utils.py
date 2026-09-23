@@ -12,7 +12,8 @@ import csv
 import io
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional
+from decimal import Decimal
+from typing import List, Optional, Any
 
 # Encodings tried in order. ``utf-8-sig`` strips a UTF-8 BOM when present and
 # decodes plain UTF-8 otherwise, so it is always tried first.
@@ -128,3 +129,31 @@ def read_csv_rows(path: str) -> CsvReadResult:
             f'(encoding {encoding}, delimiter {result.delimiter_label}).'
         )
     return result
+
+
+# Characters that can trigger formula execution in spreadsheet software (Excel, LibreOffice)
+FORMULA_PREFIXES = ('=', '+', '-', '@', '\t', '\r')
+
+
+def sanitize_csv_value(val: Any) -> Any:
+    """Sanitize a value for safe CSV export, preventing formula injection.
+
+    If the value is a string whose leading character (ignoring leading spaces)
+    starts with '=', '+', '-', '@', '\\t', or '\\r', it is prefixed with a single
+    quote (') so spreadsheet software treats it as literal text rather than an
+    executable formula.
+
+    Pure numeric types (int, float, Decimal) and non-string types are preserved
+    without modification to avoid corrupting financial/tax calculations.
+    """
+    if val is None:
+        return ''
+    if isinstance(val, (int, float, Decimal)):
+        return val
+    s = str(val)
+    if not s:
+        return ''
+    stripped = s.lstrip(' ')
+    if stripped and stripped[0] in FORMULA_PREFIXES:
+        return f"'{s}"
+    return s

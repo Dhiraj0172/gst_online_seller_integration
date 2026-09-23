@@ -571,6 +571,7 @@ def export_reconciliation(profile_id: int, return_period: str) -> str:
     """Export reconciliation results to CSV."""
     import csv
     import io
+    from app.utils.csv_utils import sanitize_csv_value
 
     rows = TCSReconciliation.query.filter(
         TCSReconciliation.profile_id == profile_id,
@@ -596,14 +597,28 @@ def export_reconciliation(profile_id: int, return_period: str) -> str:
 
     for r in rows:
         writer.writerow([
-            r.state_code, r.state_name, r.ecommerce_gstin or '',
-            money(r.our_net_taxable_value), money(r.portal_taxable_value), money(r.difference_taxable),
-            money(r.our_calculated_tcs), money(r.portal_tcs), money(r.difference_tcs),
-            money(r.our_calculated_cgst), money(r.portal_cgst_tcs), money(r.difference_cgst),
-            money(r.our_calculated_sgst), money(r.portal_sgst_tcs), money(r.difference_sgst),
-            money(r.our_calculated_igst), money(r.portal_igst_tcs), money(r.difference_igst),
-            r.match_status, r.ambiguity_details or '', 'Yes' if r.is_adjusted else 'No',
-            r.adjustment_notes or ''
+            sanitize_csv_value(r.state_code),
+            sanitize_csv_value(r.state_name),
+            sanitize_csv_value(r.ecommerce_gstin or ''),
+            money(r.our_net_taxable_value),
+            money(r.portal_taxable_value),
+            money(r.difference_taxable),
+            money(r.our_calculated_tcs),
+            money(r.portal_tcs),
+            money(r.difference_tcs),
+            money(r.our_calculated_cgst),
+            money(r.portal_cgst_tcs),
+            money(r.difference_cgst),
+            money(r.our_calculated_sgst),
+            money(r.portal_sgst_tcs),
+            money(r.difference_sgst),
+            money(r.our_calculated_igst),
+            money(r.portal_igst_tcs),
+            money(r.difference_igst),
+            sanitize_csv_value(r.match_status),
+            sanitize_csv_value(r.ambiguity_details or ''),
+            'Yes' if r.is_adjusted else 'No',
+            sanitize_csv_value(r.adjustment_notes or '')
         ])
 
     return output.getvalue()

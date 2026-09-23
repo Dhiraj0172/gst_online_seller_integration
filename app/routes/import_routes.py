@@ -79,6 +79,8 @@ def upload():
         return redirect(url_for('imports.import_page'))
         
     if file and allowed_file(file.filename):
+        wb = None
+        import_rec_id = None
         try:
             filename = secure_filename(file.filename)
             unique_filename = f"{uuid.uuid4()}_{filename}"
@@ -117,13 +119,13 @@ def upload():
             )
             db.session.add(import_rec)
             db.session.commit()
+            import_rec_id = import_rec.id
             
             # Process file using the platform adapter. Excel is handed to the
             # adapter as a loaded workbook, CSV as a path (the adapter reads it
             # with the shared CSV reader so both paths normalize identically).
             adapter = get_adapter(platform_name)
             is_csv = filename.lower().endswith('.csv')
-            wb = None
             source = filepath
             if not is_csv:
                 try:
@@ -408,6 +410,28 @@ def upload():
             
         except Exception as e:
             db.session.rollback()
+            if wb:
+                try:
+                    wb.close()
+                except Exception:
+                    pass
+            if import_rec_id is not None:
+                try:
+                    failed_rec = db.session.get(ImportHistory, import_rec_id)
+                    if failed_rec:
+                        failed_rec.processing_status = 'FAILED'
+                        failed_rec.error_summary = json.dumps({
+                            'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
+                                       'error_rows': 1, 'skipped_rows': 0},
+                            'errors': [{'code': 'UNEXPECTED_ERROR', 'message': str(e)}],
+                        })
+                        failed_rec.processing_completed_at = datetime.utcnow()
+                        db.session.commit()
+                except Exception as commit_exc:
+                    db.session.rollback()
+                    current_app.logger.error(
+                        f"Failed to update import record {import_rec_id} to FAILED: {commit_exc}"
+                    )
             flash(f'Error processing upload: {str(e)}', 'danger')
             return redirect(url_for('imports.import_page'))
             

@@ -4,6 +4,7 @@ import csv
 import io
 from app.models import Transaction, GSTProfile, AuditLog
 from app.extensions import db
+from app.utils.csv_utils import sanitize_csv_value
 from . import statement_bp
 
 def get_active_profile_id():
@@ -230,9 +231,9 @@ def export_section(section):
     for t in txs:
         writer.writerow([
             t.id,
-            t.invoice_number,
+            sanitize_csv_value(t.invoice_number),
             t.invoice_date.strftime('%d-%m-%Y') if t.invoice_date else '',
-            t.customer_gstin or '',
+            sanitize_csv_value(t.customer_gstin or ''),
             float(t.taxable_value or 0),
             float(t.total_tax or 0),
             float(t.invoice_value or 0)

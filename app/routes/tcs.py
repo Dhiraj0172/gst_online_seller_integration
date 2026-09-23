@@ -1,4 +1,4 @@
-from flask import render_template, request, session, flash, redirect, url_for, jsonify, Response
+from flask import render_template, request, session, flash, redirect, url_for, jsonify, Response, abort
 from flask_login import login_required, current_user
 from app.models import TCSReconciliation, GSTProfile, AuditLog
 from app.extensions import db
@@ -9,11 +9,16 @@ from werkzeug.utils import secure_filename
 
 
 def get_active_profile():
-    profile_id = session.get('active_profile_id')
-    if profile_id:
-        p = GSTProfile.query.filter_by(id=profile_id, user_id=current_user.id).first()
-        if p:
-            return p
+    requested_id = request.args.get('profile_id') or session.get('active_profile_id')
+    if requested_id:
+        try:
+            p = GSTProfile.query.filter_by(id=int(requested_id), user_id=current_user.id).first()
+            if p:
+                session['active_profile_id'] = p.id
+                return p
+        except (ValueError, TypeError):
+            pass
+        session.pop('active_profile_id', None)
     first_p = GSTProfile.query.filter_by(user_id=current_user.id).first()
     if first_p:
         session['active_profile_id'] = first_p.id
@@ -118,8 +123,9 @@ def reconcile():
 def adjust(id):
     profile = get_active_profile()
     if not profile:
-        flash('Active profile required', 'danger')
-        return redirect(url_for('tcs.index'))
+        abort(404)
+
+    recon = TCSReconciliation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
 
     adjustment_type = request.form.get('adjustment_type')
     notes = request.form.get('notes', '')
@@ -128,7 +134,7 @@ def adjust(id):
         flash('Invalid adjustment type', 'danger')
         return redirect(url_for('tcs.index'))
 
-    success = apply_adjustment(id, adjustment_type, notes, current_user.id)
+    success = apply_adjustment(recon.id, adjustment_type, notes, current_user.id, profile_id=profile.id)
 
     if success:
         flash('Adjustment applied successfully', 'success')

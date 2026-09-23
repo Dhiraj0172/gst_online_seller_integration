@@ -1,4 +1,4 @@
-from flask import render_template, redirect, url_for, session
+from flask import render_template, redirect, url_for, session, request
 from flask_login import login_required, current_user
 from sqlalchemy import func
 from app.extensions import db
@@ -13,10 +13,17 @@ def index():
 @main_bp.route('/dashboard')
 @login_required
 def dashboard():
-    profile_id = session.get('active_profile_id')
+    requested_id = request.args.get('profile_id') or session.get('active_profile_id')
     profile = None
-    if profile_id:
-        profile = db.session.get(GSTProfile, profile_id)
+    if requested_id:
+        try:
+            profile = GSTProfile.query.filter_by(id=int(requested_id), user_id=current_user.id).first()
+        except (ValueError, TypeError):
+            pass
+        if not profile:
+            session.pop('active_profile_id', None)
+        else:
+            session['active_profile_id'] = profile.id
     if not profile:
         profile = GSTProfile.query.filter_by(user_id=current_user.id).first()
         if profile:

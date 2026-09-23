@@ -5,7 +5,21 @@ from app import db
 from . import api_bp
 
 def get_active_profile_id():
-    return request.args.get('profile_id') or session.get('active_profile_id')
+    requested_id = request.args.get('profile_id') or session.get('active_profile_id')
+    if requested_id:
+        try:
+            p = GSTProfile.query.filter_by(id=int(requested_id), user_id=current_user.id).first()
+            if p:
+                session['active_profile_id'] = p.id
+                return p.id
+        except (ValueError, TypeError):
+            pass
+        session.pop('active_profile_id', None)
+    first_p = GSTProfile.query.filter_by(user_id=current_user.id).first()
+    if first_p:
+        session['active_profile_id'] = first_p.id
+        return first_p.id
+    return None
 
 def api_response(data=None, error=False, message="", status=200):
     return jsonify({
@@ -36,7 +50,7 @@ def validate_gstin():
 @login_required
 def profiles():
     profiles = GSTProfile.query.filter_by(user_id=current_user.id).all()
-    return api_response([{"id": p.id, "business_name": p.business_name} for p in profiles])
+    return api_response([{"id": p.id, "business_name": getattr(p, 'trade_name', None) or p.legal_name} for p in profiles])
 
 @api_bp.route('/b2b')
 @login_required

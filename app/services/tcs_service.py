@@ -501,14 +501,25 @@ def compare_and_update(portal: TCSReconciliation, internal: Dict[str, Any]) -> D
     }
 
 
-def apply_adjustment(reconciliation_id: int, adjustment_type: str, notes: str, user_id: int) -> bool:
+def apply_adjustment(reconciliation_id: int, adjustment_type: str, notes: str, user_id: int, profile_id: Optional[int] = None) -> bool:
     """Apply manual adjustment to a reconciliation row.
 
     adjustment_type: 'ACCEPT_PORTAL', 'ACCEPT_INTERNAL', 'MANUAL_OVERRIDE'
     """
-    from app.models import AuditLog
+    from app.models import AuditLog, GSTProfile
 
-    recon = db.session.get(TCSReconciliation, reconciliation_id)
+    query = TCSReconciliation.query.join(
+        GSTProfile, TCSReconciliation.profile_id == GSTProfile.id
+    ).filter(
+        TCSReconciliation.id == reconciliation_id
+    )
+
+    if profile_id is not None:
+        query = query.filter(TCSReconciliation.profile_id == profile_id)
+    if user_id is not None:
+        query = query.filter(GSTProfile.user_id == user_id)
+
+    recon = query.first()
     if not recon:
         return False
 

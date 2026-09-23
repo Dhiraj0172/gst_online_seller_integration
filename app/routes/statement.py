@@ -7,9 +7,16 @@ from app.extensions import db
 from . import statement_bp
 
 def get_active_profile_id():
-    profile_id = session.get('active_profile_id')
-    if profile_id:
-        return profile_id
+    requested_id = request.args.get('profile_id') or session.get('active_profile_id')
+    if requested_id:
+        try:
+            p = GSTProfile.query.filter_by(id=int(requested_id), user_id=current_user.id).first()
+            if p:
+                session['active_profile_id'] = p.id
+                return p.id
+        except (ValueError, TypeError):
+            pass
+        session.pop('active_profile_id', None)
     first_p = GSTProfile.query.filter_by(user_id=current_user.id).first()
     if first_p:
         session['active_profile_id'] = first_p.id
@@ -203,6 +210,8 @@ def validation_errors():
 @login_required
 def export_section(section):
     profile_id = get_active_profile_id()
+    if not profile_id:
+        return Response('', mimetype="text/csv", headers={"Content-disposition": f"attachment; filename={section}.csv"})
     sec = section.upper()
     
     query = Transaction.query.filter_by(profile_id=profile_id, is_deleted=False)

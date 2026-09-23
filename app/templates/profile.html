@@ -67,8 +67,12 @@
                                 <td>{{ profile.legal_name }}</td>
                                 <td>{{ profile.state }}</td>
                                 <td>
-                                    <button class="btn btn-sm btn-outline-primary"><i class="fas fa-edit"></i></button>
-                                    <button class="btn btn-sm btn-outline-danger"><i class="fas fa-trash"></i></button>
+                                    <a href="{{ url_for('profile.select', id=profile.id) }}" class="btn btn-sm btn-outline-success" title="Select"><i class="fas fa-check"></i></a>
+                                    <a href="{{ url_for('profile.edit', id=profile.id) }}" class="btn btn-sm btn-outline-primary" title="Edit"><i class="fas fa-edit"></i></a>
+                                    <form method="POST" action="{{ url_for('profile.delete', id=profile.id) }}" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this profile?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete"><i class="fas fa-trash"></i></button>
+                                    </form>
                                 </td>
                             </tr>
                             {% else %}

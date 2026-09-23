@@ -71,7 +71,7 @@ def edit(id):
     profiles = GSTProfile.query.filter_by(user_id=current_user.id).all()
     return render_template('profile.html', profiles=profiles, profile=profile)
 
-@profile_bp.route('/profiles/<int:id>/delete', methods=['POST', 'GET'])
+@profile_bp.route('/profiles/<int:id>/delete', methods=['POST'])
 @login_required
 def delete(id):
     profile = GSTProfile.query.filter_by(id=id, user_id=current_user.id).first_or_404()

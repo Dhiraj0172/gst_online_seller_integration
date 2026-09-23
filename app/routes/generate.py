@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from flask import render_template, request, session, flash, redirect, url_for, jsonify, send_file
+from flask import render_template, request, session, flash, redirect, url_for, jsonify, send_file, abort
 from flask_login import login_required, current_user
 from app.models import GSTR1Generation, GSTProfile
 from app.services.gstr1_generator import generate_gstr1
@@ -8,11 +8,16 @@ from app.extensions import db
 from . import generate_bp
 
 def get_active_profile():
-    profile_id = session.get('active_profile_id')
-    if profile_id:
-        p = GSTProfile.query.filter_by(id=profile_id, user_id=current_user.id).first()
-        if p:
-            return p
+    requested_id = request.args.get('profile_id') or session.get('active_profile_id')
+    if requested_id:
+        try:
+            p = GSTProfile.query.filter_by(id=int(requested_id), user_id=current_user.id).first()
+            if p:
+                session['active_profile_id'] = p.id
+                return p
+        except (ValueError, TypeError):
+            pass
+        session.pop('active_profile_id', None)
     first_p = GSTProfile.query.filter_by(user_id=current_user.id).first()
     if first_p:
         session['active_profile_id'] = first_p.id
@@ -66,6 +71,8 @@ def run():
 @login_required
 def status(id):
     profile = get_active_profile()
+    if not profile:
+        abort(404)
     gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
     return jsonify({"status": gen.generation_status})
 
@@ -73,6 +80,8 @@ def status(id):
 @login_required
 def download_excel(id):
     profile = get_active_profile()
+    if not profile:
+        abort(404)
     gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
     if gen.excel_file_path and os.path.exists(gen.excel_file_path):
         return send_file(
@@ -92,6 +101,8 @@ def download_excel(id):
 @login_required
 def download_json(id):
     profile = get_active_profile()
+    if not profile:
+        abort(404)
     gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
     if gen.json_file_path and os.path.exists(gen.json_file_path):
         return send_file(

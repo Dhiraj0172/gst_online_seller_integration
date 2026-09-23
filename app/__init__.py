@@ -111,16 +111,22 @@ def create_app(config_name=None):
     # Context processor to inject active profile and GSTIN
     @app.context_processor
     def inject_context():
-        from flask import session
+        from flask import session, request
         from flask_login import current_user
         from .models.gst_profile import GSTProfile
         active_gstin = 'Not Selected'
         active_profile = None
         if current_user and current_user.is_authenticated:
-            prof_id = session.get('active_profile_id')
+            prof_id = request.args.get('profile_id') or session.get('active_profile_id')
             if prof_id:
-                active_profile = db.session.get(GSTProfile, prof_id)
-                if active_profile:
+                try:
+                    active_profile = GSTProfile.query.filter_by(id=int(prof_id), user_id=current_user.id).first()
+                except (ValueError, TypeError):
+                    active_profile = None
+                if not active_profile:
+                    session.pop('active_profile_id', None)
+                else:
+                    session['active_profile_id'] = active_profile.id
                     active_gstin = active_profile.gstin
             if not active_profile:
                 first_prof = GSTProfile.query.filter_by(user_id=current_user.id).first()

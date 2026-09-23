@@ -35,11 +35,16 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def get_active_profile():
-    profile_id = session.get('active_profile_id')
-    if profile_id:
-        p = GSTProfile.query.filter_by(id=profile_id, user_id=current_user.id).first()
-        if p:
-            return p
+    requested_id = request.args.get('profile_id') or session.get('active_profile_id')
+    if requested_id:
+        try:
+            p = GSTProfile.query.filter_by(id=int(requested_id), user_id=current_user.id).first()
+            if p:
+                session['active_profile_id'] = p.id
+                return p
+        except (ValueError, TypeError):
+            pass
+        session.pop('active_profile_id', None)
     first_p = GSTProfile.query.filter_by(user_id=current_user.id).first()
     if first_p:
         session['active_profile_id'] = first_p.id

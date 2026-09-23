@@ -37,9 +37,10 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 import openpyxl
 
 from .base import ImportResult, ImportRow, ImportRowStatus, PlatformAdapter
+from app.utils.csv_utils import read_csv_rows
 from app.utils.date_utils import format_date_gst, parse_date
 from app.utils.gstin_validator import validate_gstin
-from app.utils.state_codes import resolve_pos_code
+from app.utils.state_codes import STATE_CODES, resolve_pos_code
 
 
 # ---------------------------------------------------------------------------
@@ -212,50 +213,55 @@ class BaseGenericAdapter(PlatformAdapter):
     # source loading
     # ------------------------------------------------------------------
     def _load_sheets(self, workbook_or_data, file_name: str = ''):
-        """Return (sheets, file_name, load_errors)."""
+        """Return (sheets, file_name, load_errors, diagnostics)."""
         if workbook_or_data is None:
-            return [], file_name, ['No workbook or data provided.']
+            return [], file_name, ['No workbook or data provided.'], {}
 
         if isinstance(workbook_or_data, openpyxl.Workbook):
-            return list(self._sheets_from_workbook(workbook_or_data)), file_name, []
+            return list(self._sheets_from_workbook(workbook_or_data)), file_name, [], {}
 
         if isinstance(workbook_or_data, (list, tuple)):
             rows = list(workbook_or_data)
             if not rows:
-                return [], file_name, ['No data rows provided.']
+                return [], file_name, ['No data rows provided.'], {}
             if isinstance(rows[0], dict):
                 headers = list(rows[0].keys())
                 data = [headers] + [[row.get(header) for header in headers] for row in rows]
-                return [SheetSource('Data', data)], file_name, []
-            return [SheetSource('Data', rows)], file_name, []
+                return [SheetSource('Data', data)], file_name, [], {}
+            return [SheetSource('Data', rows)], file_name, [], {}
 
         if isinstance(workbook_or_data, str):
             path = workbook_or_data
             file_name = file_name or os.path.basename(path)
             extension = os.path.splitext(path)[1].lower()
             if not os.path.exists(path):
-                return [], file_name, [f'File not found: {path}']
+                return [], file_name, [f'File not found: {path}'], {}
             if extension == '.csv':
-                try:
-                    with open(path, newline='', encoding='utf-8-sig', errors='replace') as handle:
-                        return [SheetSource(os.path.basename(path), list(csv.reader(handle)))], file_name, []
-                except Exception as exc:  # pragma: no cover - filesystem error
-                    return [], file_name, [f'Cannot read CSV file {path}: {exc}']
+                csv_result = read_csv_rows(path)
+                if csv_result.errors:
+                    return [], file_name, list(csv_result.errors), {}
+                diagnostics = {
+                    'source_type': 'csv',
+                    'csv_encoding': csv_result.encoding,
+                    'csv_delimiter': csv_result.delimiter_label,
+                }
+                return [SheetSource(os.path.basename(path), csv_result.rows)], file_name, [], diagnostics
             if extension not in ('.xlsx', '.xlsm', '.xltx'):
                 return [], file_name, [
                     f'Unsupported file type {extension or "(none)"}: expected an Excel '
                     f'(.xlsx/.xlsm) or .csv export.'
-                ]
+                ], {}
             try:
                 workbook = openpyxl.load_workbook(path, data_only=True)
             except Exception as exc:
-                return [], file_name, [f'Unsupported or unreadable file {path}: {exc}']
-            return list(self._sheets_from_workbook(workbook)), file_name, []
+                return [], file_name, [f'Unsupported or unreadable file {path}: {exc}'], {}
+            diagnostics = {'source_type': 'excel'}
+            return list(self._sheets_from_workbook(workbook)), file_name, [], diagnostics
 
         return [], file_name, [
             f'Unsupported data type {type(workbook_or_data).__name__}: expected an '
             f'openpyxl Workbook, a .xlsx/.csv path, or a list of rows.'
-        ]
+        ], {}
 
     @staticmethod
     def _sheets_from_workbook(workbook: openpyxl.Workbook) -> Iterator[SheetSource]:
@@ -370,7 +376,7 @@ class BaseGenericAdapter(PlatformAdapter):
             return True
         if not self.SHEET_NAMES:
             return False
-        sheets, _name, errors = self._load_sheets(workbook_or_data, file_name)
+        sheets, _name, errors, _diagnostics = self._load_sheets(workbook_or_data, file_name)
         if errors:
             return False
         preferred = {_key(sheet_name) for sheet_name in self.SHEET_NAMES}
@@ -380,7 +386,7 @@ class BaseGenericAdapter(PlatformAdapter):
     # validation
     # ------------------------------------------------------------------
     def validate(self, workbook_or_data) -> Tuple[bool, List[str]]:
-        sheets, _file_name, load_errors = self._load_sheets(workbook_or_data)
+        sheets, _file_name, load_errors, _diagnostics = self._load_sheets(workbook_or_data)
         if load_errors:
             return False, list(load_errors)
         if not sheets:
@@ -441,11 +447,12 @@ class BaseGenericAdapter(PlatformAdapter):
     # parsing
     # ------------------------------------------------------------------
     def parse(self, workbook_or_data, file_name: str = '') -> ImportResult:
-        sheets, resolved_name, load_errors = self._load_sheets(workbook_or_data, file_name)
+        sheets, resolved_name, load_errors, diagnostics = self._load_sheets(workbook_or_data, file_name)
         result = ImportResult(platform=self.PLATFORM_NAME, file_name=resolved_name or '')
         result.sheet_count = len(sheets)
         result.metadata['platform'] = self.PLATFORM_NAME
         result.metadata['format_documented'] = self.FORMAT_DOCUMENTED
+        result.metadata.update(diagnostics or {})
 
         if load_errors:
             result.errors.extend(load_errors)
@@ -469,10 +476,16 @@ class BaseGenericAdapter(PlatformAdapter):
             sheet_columns[sheet.name] = sorted(header['mapping'])
             for row_number, row in self._iter_data_rows(sheet, header):
                 raw_data: Dict[str, Any] = {}
-                for position, header_name in enumerate(header['headers']):
-                    if position >= len(row):
-                        break
-                    raw_data[header_name or f'col_{position}'] = row[position]
+                headers = header['headers']
+                for position in range(max(len(headers), len(row))):
+                    if position < len(headers):
+                        key = headers[position] or f'col_{position}'
+                    else:
+                        key = f'col_{position}'
+                    raw_data[key] = row[position] if position < len(row) else None
+                if len(row) > len(headers):
+                    # Values past the header columns are kept, never dropped.
+                    raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
                 row_object = self._build_import_row(raw_data, row_number, sheet.name)
                 result.rows.append(row_object)
                 if row_object.status is ImportRowStatus.ERROR:
@@ -520,7 +533,13 @@ class BaseGenericAdapter(PlatformAdapter):
     def _build_import_row(self, raw_data: Dict[str, Any], row_number: int, sheet_name: str) -> ImportRow:
         normalized = self.normalize(raw_data)
         warnings = list(normalized.pop('_warnings', []) or [])
-        errors: List[str] = []
+        errors: List[str] = list(normalized.pop('_errors', []) or [])
+        extra_values = raw_data.get('_extra_values')
+        if extra_values:
+            warnings.append(
+                f'{len(extra_values)} value(s) beyond the header columns were kept as '
+                f'col_N and are not mapped to any field'
+            )
         for field in self.sheet_required_columns(sheet_name):
             if not normalized.get(field):
                 errors.append(f'Missing {FIELD_LABELS.get(field, field)}')
@@ -748,6 +767,7 @@ class BaseGenericAdapter(PlatformAdapter):
             or self.PLATFORM_NAME
         )
         normalized['source_platform'] = self.PLATFORM_NAME
+        normalized['_errors'] = []
 
         self.post_normalize(raw_row, normalized, values, warnings)
 
@@ -762,6 +782,8 @@ class BaseGenericAdapter(PlatformAdapter):
     def post_normalize(self, raw_row: Dict, normalized: Dict[str, Any],
                        values: Dict[str, Any], warnings: List[str]) -> None:
         """Canonicalise dates, place of supply, GSTINs and tax components."""
+        errors: List[str] = normalized.setdefault('_errors', [])
+
         # --- dates -> DD-MM-YYYY (canonical contract) ---
         for field in ('invoice_date', 'note_date', 'original_invoice_date'):
             raw_value = normalized.get(field)
@@ -769,9 +791,15 @@ class BaseGenericAdapter(PlatformAdapter):
                 continue
             parsed = parse_date(raw_value)
             if parsed is None:
-                warnings.append(f"{FIELD_LABELS.get(field, field)} '{raw_value}' is not a recognized date")
+                # A date that is present but unreadable makes the row unusable:
+                # it cannot be assigned to a return period.
+                errors.append(
+                    f"{FIELD_LABELS.get(field, field)} '{raw_value}' is not a recognized date"
+                )
                 continue
             normalized[field] = format_date_gst(parsed)
+        if not normalized.get('invoice_date') and not normalized.get('note_date'):
+            warnings.append('Source row carries no document date column')
 
         # --- place of supply -> 2-digit state code ---
         customer_gstin = str(normalized.get('customer_gstin') or '')
@@ -782,10 +810,21 @@ class BaseGenericAdapter(PlatformAdapter):
                 pos_raw = str(value).strip()
                 break
         if pos_raw:
-            code = resolve_pos_code(pos_raw, customer_gstin or None, fallback_code='')
+            # The explicit POS column wins; the customer GSTIN is only used as a
+            # fallback when its state prefix is itself a valid state code (a
+            # malformed GSTIN must not override a good POS column).
+            gstin_for_pos = customer_gstin if (
+                len(customer_gstin) >= 2 and customer_gstin[:2] in STATE_CODES
+            ) else None
+            code = resolve_pos_code(pos_raw, gstin_for_pos, fallback_code='')
             if code:
                 normalized['place_of_supply'] = code
                 normalized['place_of_supply_raw'] = pos_raw
+                if code not in STATE_CODES:
+                    errors.append(
+                        f"Place of supply '{pos_raw}' resolved to '{code}', which is not a "
+                        f"valid GST state code"
+                    )
             else:
                 normalized['place_of_supply'] = pos_raw
                 warnings.append(
@@ -830,6 +869,22 @@ class BaseGenericAdapter(PlatformAdapter):
             warnings.append(
                 'Tax amounts are not present in the source row; only the rate is available'
             )
+
+        # --- impossible values ---
+        for field, label in (
+            ('taxable_value', 'Taxable value'), ('invoice_value', 'Invoice value'),
+            ('cgst_amount', 'CGST amount'), ('sgst_amount', 'SGST amount'),
+            ('igst_amount', 'IGST amount'), ('cess_amount', 'Cess amount'),
+            ('quantity', 'Quantity'), ('tax_rate', 'Tax rate'),
+            ('cgst_rate', 'CGST rate'), ('sgst_rate', 'SGST rate'),
+            ('igst_rate', 'IGST rate'), ('cess_rate', 'Cess rate'),
+        ):
+            value = normalized.get(field)
+            if isinstance(value, Decimal) and value < 0:
+                errors.append(
+                    f'{label} {value} is negative; negative values are not supported by this '
+                    f'import contract'
+                )
 
     def _any_present(self, values: Dict[str, Any], raw_row: Dict[str, Any],
                      fields: Tuple[str, ...]) -> bool:

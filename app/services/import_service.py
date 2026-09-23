@@ -1,5 +1,6 @@
 import openpyxl
 import json
+import os
 from typing import Dict, Any, Iterator, List, Optional
 from decimal import Decimal
 from datetime import datetime
@@ -8,7 +9,9 @@ from app.adapters.base import ImportResult, ImportRow, ImportRowStatus
 from app.models import ImportHistory, RawImport, Transaction
 from app.extensions import db
 from app.services.classification_service import classify_transaction, determine_supply_type
+from app.services.duplicate_service import build_fingerprint, find_existing_transactions
 from app.services.gst_rules import get_rules_for_period
+from app.utils.csv_utils import read_csv_rows
 
 
 class ImportProcessingResult:
@@ -31,7 +34,15 @@ def validate_file(file_path: str) -> bool:
 
 
 def read_chunks(file_path: str, chunk_size: int = 1000) -> Iterator[List[Dict[str, Any]]]:
-    """Read Excel file in chunks, yielding list of row dicts."""
+    """Read an Excel or CSV file in chunks, yielding lists of row dicts.
+
+    Both formats expose the same row dicts (header keys + ``_row_number`` /
+    ``_sheet_name``) so the adapter normalization path is identical.
+    """
+    if file_path.lower().endswith('.csv'):
+        yield from _read_csv_chunks(file_path, chunk_size)
+        return
+
     wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
     ws = wb.active
     
@@ -62,6 +73,37 @@ def read_chunks(file_path: str, chunk_size: int = 1000) -> Iterator[List[Dict[st
         yield chunk
         
     wb.close()
+
+
+def _read_csv_chunks(file_path: str, chunk_size: int = 1000) -> Iterator[List[Dict[str, Any]]]:
+    """Chunked reader for CSV sources (UTF-8/BOM aware, delimiter detected)."""
+    csv_result = read_csv_rows(file_path)
+    if csv_result.errors:
+        raise ValueError('; '.join(csv_result.errors))
+
+    rows = csv_result.rows
+    if not rows:
+        return
+    headers = [str(cell).strip() if str(cell).strip() else f'col_{i}'
+               for i, cell in enumerate(rows[0])]
+    sheet_name = os.path.basename(file_path)
+
+    chunk: List[Dict[str, Any]] = []
+    for row_idx, row in enumerate(rows[1:], start=2):
+        raw_data: Dict[str, Any] = {}
+        for position in range(max(len(headers), len(row))):
+            key = headers[position] if position < len(headers) else f'col_{position}'
+            raw_data[key] = row[position] if position < len(row) else None
+        if not any(value is not None and str(value).strip() for value in raw_data.values()):
+            continue
+        raw_data['_row_number'] = row_idx
+        raw_data['_sheet_name'] = sheet_name
+        chunk.append(raw_data)
+        if len(chunk) >= chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
 
 
 def process_import(
@@ -114,10 +156,14 @@ def process_import(
         if not adapter:
             raise ValueError(f"No adapter found for platform: {platform_name}")
             
-        # Validate file structure
-        wb = openpyxl.load_workbook(file_path, read_only=True)
-        is_valid, validation_errors = adapter.validate(wb)
-        wb.close()
+        # Validate file structure (Excel as a workbook, CSV as a path)
+        is_csv = file_path.lower().endswith('.csv')
+        source = file_path
+        if not is_csv:
+            source = openpyxl.load_workbook(file_path, read_only=True)
+        is_valid, validation_errors = adapter.validate(source)
+        if not is_csv:
+            source.close()
         
         if not is_valid:
             raise ValueError(f"File validation failed: {', '.join(validation_errors)}")
@@ -130,6 +176,12 @@ def process_import(
         profile = db.session.get(GSTProfile, profile_id)
         seller_gstin = profile.gstin if profile else ''
         seller_state = profile.state_code if profile else ''
+
+        # Duplicate bookkeeping: rows already stored for this profile, plus rows
+        # seen earlier in this very file. Duplicates are marked, never dropped.
+        seen_in_file: Dict[str, int] = {}
+        duplicate_rows = 0
+        duplicate_entries: List[Dict[str, Any]] = []
         
         # Process in chunks
         for chunk in read_chunks(file_path):
@@ -153,6 +205,36 @@ def process_import(
                 try:
                     # Normalize using adapter
                     normalized = adapter.normalize(raw_row)
+                    row_errors = list(normalized.get('_errors') or [])
+
+                    # Duplicate detection against this file and stored data
+                    fingerprint = build_fingerprint(normalized, profile_id, platform_name)
+                    duplicate_reason = None
+                    if fingerprint in seen_in_file:
+                        duplicate_reason = f'Duplicate of row {seen_in_file[fingerprint]} in this file'
+                    else:
+                        prior_tx = find_existing_transactions(profile_id, [fingerprint]).get(fingerprint)
+                        if prior_tx is not None:
+                            duplicate_reason = (
+                                f'Already imported: transaction #{prior_tx.id} '
+                                f'(import #{prior_tx.import_history_id})'
+                            )
+                    if duplicate_reason:
+                        seen_in_file.setdefault(fingerprint, row_number)
+                        duplicate_rows += 1
+                        duplicate_entries.append({'row': row_number, 'message': duplicate_reason})
+                        raw_import.status = 'SKIPPED'
+                        raw_import.errors = json.dumps([duplicate_reason])
+                        result.skipped_rows += 1
+                        continue
+                    seen_in_file.setdefault(fingerprint, row_number)
+
+                    if row_errors:
+                        raw_import.status = 'ERROR'
+                        raw_import.errors = json.dumps(row_errors)
+                        result.error_rows += 1
+                        result.errors.append(f"Row {row_number}: {'; '.join(row_errors)}")
+                        continue
                     
                     # Determine supply type (INTRA/INTER)
                     supply_type = determine_supply_type(
@@ -179,6 +261,7 @@ def process_import(
                         classification=classification,
                         return_period=return_period
                     )
+                    transaction.row_fingerprint = fingerprint
                     
                     db.session.add(transaction)
                     

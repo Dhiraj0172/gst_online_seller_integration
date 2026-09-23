@@ -5,31 +5,83 @@
 <div class="card shadow">
     <div class="card-body">
         <div class="table-responsive">
-            <table class="table">
+            <table class="table align-middle">
                 <thead>
                     <tr>
                         <th>Date</th>
                         <th>Platform</th>
                         <th>File Name</th>
                         <th>Status</th>
-                        <th>Rows Processed</th>
+                        <th>Rows</th>
+                        <th>Import report</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% if history %}
                         {% for item in history %}
+                        {% set report = reports.get(item.id) if reports is defined else None %}
                         <tr>
                             <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '' }}</td>
                             <td>{{ item.platform_name }}</td>
                             <td>{{ item.file_name }}</td>
-                            <td><span class="badge bg-success">{{ item.processing_status }}</span></td>
-                            <td>{{ item.total_rows }}</td>
+                            <td>
+                                {% if item.processing_status == 'COMPLETED' %}
+                                <span class="badge bg-success">{{ item.processing_status }}</span>
+                                {% elif item.processing_status == 'PARTIAL' %}
+                                <span class="badge bg-warning text-dark">{{ item.processing_status }}</span>
+                                {% elif item.processing_status == 'FAILED' %}
+                                <span class="badge bg-danger">{{ item.processing_status }}</span>
+                                {% else %}
+                                <span class="badge bg-secondary">{{ item.processing_status }}</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <small>
+                                    total {{ item.total_rows }}<br>
+                                    ok {{ item.success_rows }},
+                                    warn {{ item.warning_rows }},
+                                    err {{ item.error_rows }},
+                                    dup {{ item.skipped_rows }}
+                                </small>
+                            </td>
+                            <td>
+                                {% if report %}
+                                    {% if report.errors %}
+                                        <ul class="mb-1 ps-3 small text-danger">
+                                            {% for entry in report.errors[:4] %}
+                                            <li><code>{{ entry.code }}</code>
+                                                {% if entry.row %}row {{ entry.row }}:{% endif %}
+                                                {{ entry.message }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                        {% if report.errors|length > 4 %}
+                                        <small class="text-muted">{{ report.errors|length - 4 }} more error(s)</small>
+                                        {% endif %}
+                                    {% endif %}
+                                    {% if report.duplicates %}
+                                        <ul class="mb-1 ps-3 small text-warning">
+                                            {% for entry in report.duplicates[:4] %}
+                                            <li><code>{{ entry.code }}</code> row {{ entry.row }}: {{ entry.message }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                        {% if report.duplicates|length > 4 %}
+                                        <small class="text-muted">{{ report.duplicates|length - 4 }} more duplicate(s)</small>
+                                        {% endif %}
+                                    {% endif %}
+                                    {% if report.warnings %}
+                                        <small class="text-muted">{{ report.warnings|length }} row warning(s) recorded</small>
+                                    {% endif %}
+                                    {% if not report.errors and not report.duplicates and not report.warnings %}
+                                        <small class="text-muted">No issues.</small>
+                                    {% endif %}
+                                {% endif %}
+                            </td>
                             <td><a href="{{ url_for('imports.detail', id=item.id) }}" class="btn btn-sm btn-outline-info">Detail</a></td>
                         </tr>
                         {% endfor %}
                     {% else %}
-                        <tr><td colspan="6" class="text-center">No history available</td></tr>
+                        <tr><td colspan="7" class="text-center">No history available</td></tr>
                     {% endif %}
                 </tbody>
             </table>

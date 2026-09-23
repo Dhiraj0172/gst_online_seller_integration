@@ -82,6 +82,12 @@ class Transaction(db.Model):
     validation_status = db.Column(db.String(20), index=True) # VALID/WARNING/ERROR
     validation_errors = db.Column(db.Text) # JSON string
 
+    # Business-key fingerprint used for duplicate detection on import:
+    # sha256 of (profile, source, document kind/number, line id, date, GSTIN,
+    # HSN, amounts). Indexed for lookup; deliberately NOT unique because a
+    # soft-deleted transaction must not block a legitimate re-import.
+    row_fingerprint = db.Column(db.String(64), index=True)
+
     classification_status = db.Column(db.String(50))
     gstr1_table = db.Column(db.String(20), index=True)
     source_metadata = db.Column(db.Text) # JSON string

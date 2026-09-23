@@ -152,8 +152,12 @@ class TestRejectedUploads:
 
             errors = json.loads(history.error_summary)
             assert errors, 'rejection must record error information'
-            assert any('recognizable header row' in message for message in errors)
-            assert any('Flipkart' in message for message in errors)
+            assert errors['counts']['total_rows'] == 0
+            messages = [entry['message'] for entry in errors['errors']]
+            codes = [entry['code'] for entry in errors['errors']]
+            assert any('recognizable header row' in message for message in messages)
+            assert any('Flipkart' in message for message in messages)
+            assert codes == ['INVALID_FILE']
 
             # a rejected file must not create normalized transactions
             assert Transaction.query.filter_by(profile_id=profile_id).count() == 0

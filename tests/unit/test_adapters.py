@@ -570,7 +570,8 @@ class TestMalformedAndUnsupportedFiles:
         # the supplied value is never silently replaced or discarded
         assert result.rows[0].normalized_data['customer_gstin'] == 'INVALID'
 
-    def test_unparseable_dates_are_reported(self):
+    def test_unparseable_dates_are_reported_as_errors(self):
+        """A date that is present but unreadable rejects the row explicitly."""
         workbook = _workbook('invalid_dates_test.xlsx')
         try:
             result = CustomExcelAdapter().parse(workbook)
@@ -578,8 +579,11 @@ class TestMalformedAndUnsupportedFiles:
             workbook.close()
         assert result.total_rows == 5
         bad = [row for row in result.rows
-               if any('not a recognized date' in warning for warning in row.warnings)]
+               if any('not a recognized date' in error for error in row.errors)]
         assert len(bad) >= 4
+        assert all(row.status is ImportRowStatus.ERROR for row in bad)
+        # the row is still present with its raw data, never dropped
+        assert all(row.raw_data for row in bad)
 
     def test_rows_missing_the_document_number_are_errors_not_dropped(self):
         workbook = _sheet_workbook(

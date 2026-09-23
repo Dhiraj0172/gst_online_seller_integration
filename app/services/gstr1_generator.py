@@ -77,6 +77,60 @@ def _empty_gstr1_structure(return_period: str, gstin: str = "") -> Dict[str, Any
     }
 
 
+def _normalize_classification(raw):
+    """Normalize explicit classification variants to base routing targets.
+
+    The classification_service and external data sources may produce suffixed
+    or amendment variants that the main routing if/elif chain in
+    _build_gstr1_json does not match.  This function maps them back to the
+    base names the router understands, while preserving amendment semantics,
+    SEZ export-type hints, and NIL/Exempt/Non-GST category identifiers.
+
+    Returns:
+        (classification, is_amendment, sez_exp_typ_override, nil_base_override)
+
+    CRIT-02 FIX — no classification should silently disappear.
+    """
+    # ── Amendment classifications ──
+    # These classification strings directly indicate an amendment transaction.
+    _AMENDMENT_MAP = {
+        'B2BA':   ('B2B',    True,  None,    None),
+        'B2CSA':  ('B2CS',   True,  None,    None),
+        'CDNRA':  ('CDNR',   True,  None,    None),
+        'CDNURA': ('CDNUR',  True,  None,    None),
+        'EXPA':   ('EXPORT', True,  None,    None),
+    }
+
+    # ── SEZ sub-types ──
+    # Both route to SEZ table but with different exp_typ in GSTN schema.
+    _SEZ_MAP = {
+        'SEZ_REGISTERED':   ('SEZ', False, 'WOPAY', None),
+        'SEZ_UNREGISTERED': ('SEZ', False, 'WOPAY', None),
+    }
+
+    # ── NIL/Exempt/Non-GST with recipient suffix ──
+    # Strip the _REGISTERED / _UNREGISTERED suffix to match the base
+    # routing branch, but preserve the base category for _add_nil().
+    _NIL_MAP = {
+        'NIL_REGISTERED':       ('NIL',    False, None, 'NIL'),
+        'NIL_UNREGISTERED':     ('NIL',    False, None, 'NIL'),
+        'EXEMPT_REGISTERED':    ('EXEMPT', False, None, 'EXEMPT'),
+        'EXEMPT_UNREGISTERED':  ('EXEMPT', False, None, 'EXEMPT'),
+        'NONGST_REGISTERED':    ('NONGST', False, None, 'NONGST'),
+        'NONGST_UNREGISTERED':  ('NONGST', False, None, 'NONGST'),
+    }
+
+    if raw in _AMENDMENT_MAP:
+        return _AMENDMENT_MAP[raw]
+    if raw in _SEZ_MAP:
+        return _SEZ_MAP[raw]
+    if raw in _NIL_MAP:
+        return _NIL_MAP[raw]
+
+    # No normalization needed — pass through as-is.
+    return (raw, False, None, None)
+
+
 def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: list) -> Dict[str, Any]:
     """
     Build GSTR-1 JSON structure from transactions.
@@ -126,7 +180,16 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
         total_taxable += txval
         total_tax += Decimal(str(tx.total_tax or 0))
 
-        classification = (getattr(tx, 'classification_status', None) or getattr(tx, 'gstr1_table', None) or tx.supply_type or 'UNKNOWN').upper()
+        raw_classification = (getattr(tx, 'classification_status', None) or getattr(tx, 'gstr1_table', None) or tx.supply_type or 'UNKNOWN').upper()
+
+        # ── CRIT-02 FIX: Normalize explicit classification variants ──
+        # The classification_service may produce suffixed/amendment variants
+        # (e.g. B2BA, CDNRA, SEZ_REGISTERED, NIL_UNREGISTERED) that must be
+        # mapped to the base routing branches used below.  Without this
+        # normalization these transactions silently fall through every
+        # if/elif branch and are dropped from GSTR-1 output.
+        classification, is_amendment_from_class, sez_exp_typ_override, nil_base_override = \
+            _normalize_classification(raw_classification)
 
         # Build item detail following official GSTN itm_det schema
         item_det = {
@@ -139,7 +202,7 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
         }
 
         pos_val = tx.place_of_supply or resolve_pos_code(tx.place_of_supply, tx.customer_gstin, profile.state_code)
-        is_amendment = getattr(tx, 'amendment_flag', False) or False
+        is_amendment = (getattr(tx, 'amendment_flag', False) or False) or is_amendment_from_class
 
         # Determine if inter/intra state
         is_inter = str(pos_val) != supplier_state
@@ -194,7 +257,7 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
                     else:
                         dn_numbers.append(tx.note_number)
         elif classification in ('EXPORT', 'SEZ'):
-            exp_typ = "WPAY" if classification == 'EXPORT' else "WOPAY"
+            exp_typ = sez_exp_typ_override or ("WPAY" if classification == 'EXPORT' else "WOPAY")
             if is_amendment:
                 _add_exp_amendment(expa_groups, tx, item_det, exp_typ)
             else:
@@ -203,11 +266,12 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
                     invoice_numbers.append(tx.invoice_number)
 
         elif classification in ('NIL', 'EXEMPT', 'NONGST'):
-            _add_nil(nil_data, classification, txval, is_inter, tx.customer_gstin)
+            nil_category = nil_base_override or classification
+            _add_nil(nil_data, nil_category, txval, is_inter, tx.customer_gstin)
 
         # HSN aggregation (for all non-amendment transactions)
         if not is_amendment and classification != 'B2CLA':
-            _add_hsn(hsn_agg, tx, txval, classification)
+            _add_hsn(hsn_agg, tx, txval, raw_classification)
 
     # Build HSN output based on period rules
     hsn_reporting_mode = rules.get('hsn_reporting_mode', 'combined')

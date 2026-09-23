@@ -879,9 +879,13 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
         "b2cl": [],
         "b2cla": [],
         "b2cs": [],
+        "b2csa": [],
         "cdnr": [],
+        "cdnra": [],
         "cdnur": [],
+        "cdnura": [],
         "exp": [],
+        "expa": [],
         "nil": [],
         "hsn": [],
         "hsnb2c": [],
@@ -935,6 +939,18 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
             txval = b2cs.get("txval", 0)
             csamt = b2cs.get("csamt", 0)
             excel_data["b2cs"].append([
+                typ, pos, "", rt, txval, csamt, ""
+            ])
+
+    # B2CSA: flat aggregated rows
+    if "b2csa" in json_data:
+        for b2csa in json_data["b2csa"]:
+            typ = b2csa.get("typ", "OE")
+            pos = b2csa.get("pos", "")
+            rt = b2csa.get("rt", 0)
+            txval = b2csa.get("txval", 0)
+            csamt = b2csa.get("csamt", 0)
+            excel_data["b2csa"].append([
                 typ, pos, "", rt, txval, csamt, ""
             ])
 
@@ -998,6 +1014,27 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
                         ctin, nt_num, nt_dt, inum, idt, val, pos, rchrg, "", ntty, "", rt, txval, csamt
                     ])
 
+    # CDNRA: follows {ctin, nt: [{..., itms: [{itm_det}]}]} structure
+    if "cdnra" in json_data:
+        for cdnra_entry in json_data["cdnra"]:
+            ctin = cdnra_entry.get("ctin", "")
+            for nt in cdnra_entry.get("nt", []):
+                ont_num = nt.get("ont_num", "")
+                ont_dt = nt.get("ont_dt", "")
+                nt_num = nt.get("nt_num", "")
+                nt_dt = nt.get("nt_dt", "")
+                val = nt.get("val", 0)
+                pos = nt.get("pos", "")
+                ntty = nt.get("ntty", "C")
+                for itm in nt.get("itms", []):
+                    det = itm.get("itm_det", {})
+                    rt = det.get("rt", 0)
+                    txval = det.get("txval", 0)
+                    csamt = det.get("csamt", 0)
+                    excel_data["cdnra"].append([
+                        ctin, ont_num, ont_dt, nt_num, nt_dt, val, pos, "", ntty, rt, txval, csamt
+                    ])
+
     # CDNUR: follows [{..., itms: [{itm_det}]}] structure
     if "cdnur" in json_data:
         for nt in json_data["cdnur"]:
@@ -1017,6 +1054,26 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
                     nt_num, nt_dt, inum, idt, val, pos, "", ntty, "", rt, txval, csamt
                 ])
 
+    # CDNURA: follows [{..., itms: [{itm_det}]}] structure
+    if "cdnura" in json_data:
+        for nt in json_data["cdnura"]:
+            ont_num = nt.get("ont_num", "")
+            ont_dt = nt.get("ont_dt", "")
+            nt_num = nt.get("nt_num", "")
+            nt_dt = nt.get("nt_dt", "")
+            val = nt.get("val", 0)
+            pos = nt.get("pos", "")
+            typ = nt.get("typ", "B2CL")
+            ntty = nt.get("ntty", "C")
+            for itm in nt.get("itms", []):
+                det = itm.get("itm_det", {})
+                rt = det.get("rt", 0)
+                txval = det.get("txval", 0)
+                csamt = det.get("csamt", 0)
+                excel_data["cdnura"].append([
+                    ont_num, ont_dt, nt_num, nt_dt, val, pos, typ, ntty, rt, txval, csamt
+                ])
+
     # EXP: follows {exp_typ, inv: [{..., itms: [{itm_det}]}]} structure
     if "exp" in json_data:
         for exp_entry in json_data["exp"]:
@@ -1034,6 +1091,27 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
                     txval = det.get("txval", 0)
                     excel_data["exp"].append([
                         exp_typ, inum, idt, val, sbpcode, sbnum, sbdt, rt, txval
+                    ])
+
+    # EXPA: follows {exp_typ, inv: [{..., itms: [{itm_det}]}]} structure
+    if "expa" in json_data:
+        for expa_entry in json_data["expa"]:
+            exp_typ = expa_entry.get("exp_typ", "")
+            for inv in expa_entry.get("inv", []):
+                oinum = inv.get("oinum", "")
+                oidt = inv.get("oidt", "")
+                inum = inv.get("inum", "")
+                idt = inv.get("idt", "")
+                val = inv.get("val", 0)
+                sbpcode = inv.get("sbpcode", "")
+                sbnum = inv.get("sbnum", "")
+                sbdt = inv.get("sbdt", "")
+                for itm in inv.get("itms", []):
+                    det = itm.get("itm_det", {})
+                    rt = det.get("rt", 0)
+                    txval = det.get("txval", 0)
+                    excel_data["expa"].append([
+                        exp_typ, oinum, oidt, inum, idt, val, sbpcode, sbnum, sbdt, rt, txval
                     ])
 
     # NIL: follows {inv: [{sply_ty, nil_amt, expt_amt, ngsup_amt}]} structure

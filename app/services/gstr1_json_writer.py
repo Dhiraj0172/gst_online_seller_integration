@@ -19,7 +19,7 @@ class GSTR1JsonWriter:
         "b2b", "b2ba", "b2cl", "b2cla", "b2cs", "b2csa",
         "cdnr", "cdnra", "cdnur", "cdnura",
         "exp", "expa",
-        "nil", "hsn", "doc_issue"
+        "nil", "hsn", "hsnb2c", "doc_issue"
     ]
 
     @staticmethod

@@ -26,6 +26,10 @@ class GSTR1ExcelWriter:
             "title": "b2cs",
             "headers": ["Type", "Place Of Supply", "Applicable % of Tax Rate", "Rate", "Taxable Value", "Cess Amount", "E-Commerce GSTIN"]
         },
+        "b2csa": {
+            "title": "b2csa",
+            "headers": ["Type", "Place Of Supply", "Applicable % of Tax Rate", "Rate", "Taxable Value", "Cess Amount", "E-Commerce GSTIN"]
+        },
         "cdnr": {
             "title": "cdnr",
             "headers": ["GSTIN/UIN of Recipient", "Note/Refund Voucher Number", "Note/Refund Voucher date", "Invoice/Advance Receipt Number", "Invoice/Advance Receipt date", "Note/Refund Voucher Value", "Place Of Supply", "Reverse Charge", "Note Supply Type", "Note Type", "Applicable % of Tax Rate", "Rate", "Taxable Value", "Cess Amount"]

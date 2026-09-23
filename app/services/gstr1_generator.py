@@ -47,21 +47,14 @@ def load_transactions(profile_id: str, return_period: str) -> Dict[str, Any]:
     if not profile:
         return _empty_gstr1_structure(return_period)
 
-    # Query transactions for this profile and return period
-    # Filter by return_period if ImportHistory is present, otherwise include profile's active transactions
-    tx_query = db.session.query(Transaction).outerjoin(
+    # Query transactions strictly for this profile and exact return period
+    transactions = db.session.query(Transaction).join(
         ImportHistory, Transaction.import_history_id == ImportHistory.id
     ).filter(
         Transaction.profile_id == int(profile_id),
-        Transaction.is_deleted == False
-    )
-
-    # Check if period-filtered transactions exist
-    period_txs = tx_query.filter(
-        (ImportHistory.return_period == return_period) | (ImportHistory.return_period.is_(None))
+        Transaction.is_deleted == False,
+        ImportHistory.return_period == return_period
     ).all()
-
-    transactions = period_txs if period_txs else tx_query.all()
 
     if not transactions:
         return _empty_gstr1_structure(return_period, profile.gstin)

@@ -109,30 +109,61 @@ def upload():
                 wb = openpyxl.load_workbook(filepath, data_only=True)
                 if not adapter:
                     adapter = detect_platform(wb, filename)
-            except Exception:
-                pass
-                
+            except Exception as exc:
+                import_rec.processing_status = 'FAILED'
+                import_rec.error_summary = json.dumps([f'Unsupported or unreadable file: {exc}'])
+                import_rec.processing_completed_at = datetime.utcnow()
+                db.session.commit()
+                flash(f'Import rejected: unsupported or unreadable file ({exc}). '
+                      f'Upload an Excel (.xlsx/.xls) or CSV marketplace export.', 'danger')
+                return redirect(url_for('imports.history'))
+
             if not adapter:
                 adapter = BaseGenericAdapter()
-                
-            parse_result = adapter.parse(wb if wb else filepath)
-            
+
+            # Fail explicitly on malformed / unsupported files instead of
+            # importing rows that the adapter cannot understand.
+            is_valid, validation_errors = adapter.validate(wb)
+            if not is_valid:
+                import_rec.processing_status = 'FAILED'
+                import_rec.error_summary = json.dumps(validation_errors)
+                import_rec.processing_completed_at = datetime.utcnow()
+                db.session.commit()
+                if wb:
+                    wb.close()
+                for message in validation_errors[:3]:
+                    flash(f'Import rejected ({adapter.PLATFORM_NAME}): {message}', 'danger')
+                return redirect(url_for('imports.history'))
+
+            parse_result = adapter.parse(wb if wb else filepath, filename)
+            if parse_result.errors:
+                import_rec.processing_status = 'FAILED'
+                import_rec.error_summary = json.dumps(parse_result.errors)
+                import_rec.processing_completed_at = datetime.utcnow()
+                db.session.commit()
+                if wb:
+                    wb.close()
+                flash(f'Import rejected: {parse_result.errors[0]}', 'danger')
+                return redirect(url_for('imports.history'))
+
             total_rows = 0
             success_rows = 0
             error_rows = 0
-            
+            warning_rows = 0
+
             for row in parse_result.rows:
                 total_rows += 1
-                is_success = (row.status.value == 'SUCCESS')
-                if is_success:
+                if row.status.value == 'SUCCESS':
                     success_rows += 1
+                elif row.status.value == 'WARNING':
+                    warning_rows += 1
                 else:
                     error_rows += 1
                     
                 # Save RawImport
                 raw_imp = RawImport(
                     import_history_id=import_rec.id,
-                    sheet_name=getattr(row, 'sheet_name', 'Sheet1') or 'Sheet1',
+                    sheet_name=getattr(row, 'sheet_name', '') or parse_result.metadata.get('sheets_parsed', [''])[0],
                     row_number=row.row_number,
                     raw_data=json.dumps({k: str(v) for k, v in row.raw_data.items() if v is not None}),
                     status=row.status.value,
@@ -198,7 +229,8 @@ def upload():
             import_rec.total_rows = total_rows
             import_rec.success_rows = success_rows
             import_rec.error_rows = error_rows
-            import_rec.processing_status = 'COMPLETED'
+            import_rec.warning_rows = warning_rows
+            import_rec.processing_status = 'COMPLETED' if (error_rows == 0 and warning_rows == 0) else 'PARTIAL'
             import_rec.processing_completed_at = datetime.utcnow()
             db.session.commit()
             

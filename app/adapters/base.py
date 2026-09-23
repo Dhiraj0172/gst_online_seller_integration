@@ -19,6 +19,7 @@ class ImportRow:
     normalized_data: Optional[Dict[str, Any]] = None
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    sheet_name: str = ''
 
 @dataclass
 class ImportResult:

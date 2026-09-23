@@ -13,7 +13,7 @@ Tests verify:
 9. HSN pre-May-2025 (combined)
 10. HSN May-2025+ (separate B2B/B2C)
 11. Documents Issued (Table 13)
-12. Amendment structures (b2ba, b2csa, cdnra, cdnura)
+12. Amendment structures (b2ba, b2cla, b2csa, cdnra, cdnura)
 13. Validator rejects malformed nesting
 14. Generator and validator agree on valid output
 15. JSON and Excel represent the same reporting data
@@ -750,6 +750,307 @@ class TestAmendments:
         inv = expa_groups["WPAY"]["inv"][0]
         assert inv["oinum"] == "EXP001"
         assert inv["inum"] == "EXP002"
+
+    def test_b2cla_structure(self):
+        """B2CLA should include pos, oinum, oidt (original), inum, idt (revised), and itms."""
+        from app.services.gstr1_generator import _add_b2cl_amendment
+
+        class MockTx:
+            invoice_number = "LREV001"
+            invoice_date = None
+            invoice_value = 300000
+            ecommerce_gstin = ""
+            original_invoice_number = "LINV001"
+            original_invoice_date = None
+
+        b2cla_groups = {}
+        item_det = {"rt": 18.0, "txval": 300000.0, "iamt": 54000.0, "camt": 0.0, "samt": 0.0, "csamt": 0.0}
+        _add_b2cl_amendment(b2cla_groups, MockTx(), item_det, "29")
+
+        assert "29" in b2cla_groups
+        assert b2cla_groups["29"]["pos"] == "29"
+        assert len(b2cla_groups["29"]["inv"]) == 1
+        inv = b2cla_groups["29"]["inv"][0]
+        assert inv["oinum"] == "LINV001"
+        assert inv["inum"] == "LREV001"
+        assert inv["val"] == 300000.0
+        assert len(inv["itms"]) == 1
+        itm = inv["itms"][0]["itm_det"]
+        assert itm["rt"] == 18.0
+        assert itm["txval"] == 300000.0
+        assert itm["iamt"] == 54000.0
+
+    def test_pre_aug_2024_b2cl_amendment_routes_to_b2cla(self):
+        """For pre-Aug-2024 periods, B2CL amendment must route to b2cla, not b2cl or b2csa."""
+        from decimal import Decimal
+        from app.services.gstr1_generator import _build_gstr1_json
+
+        class MockProfile:
+            gstin = "27AABCU9603R1ZM"
+            state_code = "27"
+
+        class MockTx:
+            classification_status = "B2CL"
+            supply_type = "INTER"
+            taxable_value = Decimal('300000')
+            total_tax = Decimal('54000')
+            tax_rate = 18.0
+            igst_amount = Decimal('54000')
+            cgst_amount = Decimal('0')
+            sgst_amount = Decimal('0')
+            cess_amount = Decimal('0')
+            invoice_number = "INV-L002"
+            invoice_date = None
+            invoice_value = Decimal('354000')
+            customer_gstin = None
+            place_of_supply = "29"
+            amendment_flag = True
+            original_invoice_number = "INV-L001"
+            original_invoice_date = None
+            ecommerce_gstin = ""
+            hsn_sac = "6109"
+            uqc = "NOS"
+            quantity = Decimal('100')
+            description = "Test"
+
+        # Pre-August-2024: July 2024 (072024)
+        result = _build_gstr1_json(MockProfile(), "072024", [MockTx()])
+        assert "b2cla" in result, "b2cla table should be present in generated JSON for pre-Aug 2024 amendment"
+        assert "b2cl" not in result, "b2cl table should not have amendment transaction"
+        assert "b2csa" not in result, "b2csa should not be generated for pre-Aug 2024 B2CL amendment"
+        assert len(result["b2cla"]) == 1
+        assert result["b2cla"][0]["pos"] == "29"
+        inv = result["b2cla"][0]["inv"][0]
+        assert inv["oinum"] == "INV-L001"
+        assert inv["inum"] == "INV-L002"
+        assert inv["itms"][0]["itm_det"]["txval"] == 300000.0
+
+    def test_post_aug_2024_b2c_amendment_routes_to_b2csa(self):
+        """For August 2024 onwards, all B2C amendments must route to b2csa, NOT b2cla."""
+        from decimal import Decimal
+        from app.services.gstr1_generator import _build_gstr1_json
+
+        class MockProfile:
+            gstin = "27AABCU9603R1ZM"
+            state_code = "27"
+
+        class MockTx:
+            classification_status = "B2CL"
+            supply_type = "INTER"
+            taxable_value = Decimal('300000')
+            total_tax = Decimal('54000')
+            tax_rate = 18.0
+            igst_amount = Decimal('54000')
+            cgst_amount = Decimal('0')
+            sgst_amount = Decimal('0')
+            cess_amount = Decimal('0')
+            invoice_number = "INV-L002"
+            invoice_date = None
+            invoice_value = Decimal('354000')
+            customer_gstin = None
+            place_of_supply = "29"
+            amendment_flag = True
+            original_invoice_number = "INV-L001"
+            original_invoice_date = None
+            ecommerce_gstin = ""
+            hsn_sac = "6109"
+            uqc = "NOS"
+            quantity = Decimal('100')
+            description = "Test"
+
+        # Post-August-2024: Jan 2025 (012025)
+        result = _build_gstr1_json(MockProfile(), "012025", [MockTx()])
+        assert "b2cla" not in result, "b2cla should NOT be present for post-Aug 2024 period"
+        assert "b2csa" in result, "b2csa should receive the amendment for post-Aug 2024 period"
+        assert len(result["b2csa"]) == 1
+        assert result["b2csa"][0]["sply_ty"] == "INTER"
+        assert result["b2csa"][0]["pos"] == "29"
+        assert result["b2csa"][0]["txval"] == 300000.0
+
+    def test_b2cla_valid_structure(self, validator):
+        """Validator should accept valid B2CLA structure."""
+        data = _minimal_gstr1(
+            gstin="27AABCU9603R1ZM",
+            fp="072024",
+            b2cla=[{
+                "pos": "29",
+                "inv": [{
+                    "oinum": "INV001",
+                    "oidt": "10-06-2024",
+                    "inum": "INV001A",
+                    "idt": "15-07-2024",
+                    "val": 354000.0,
+                    "ecom_gstin": "",
+                    "itms": [{"num": 1, "itm_det": {"rt": 18.0, "txval": 300000.0, "iamt": 54000.0, "camt": 0.0, "samt": 0.0, "csamt": 0.0}}]
+                }]
+            }]
+        )
+        result = validator.validate_gstr1_json(json.dumps(data))
+        assert result.is_valid, f"Valid B2CLA structure should pass: {result.errors}"
+
+    def test_b2cla_rejects_missing_pos(self, validator):
+        """Validator should reject B2CLA entry without pos."""
+        data = _minimal_gstr1(
+            gstin="27AABCU9603R1ZM",
+            fp="072024",
+            b2cla=[{
+                "inv": [{
+                    "oinum": "INV001",
+                    "inum": "INV001A",
+                    "itms": [{"num": 1, "itm_det": {"rt": 18.0, "txval": 300000.0, "iamt": 54000.0, "csamt": 0.0}}]
+                }]
+            }]
+        )
+        result = validator.validate_gstr1_json(json.dumps(data))
+        assert not result.is_valid
+        pos_errors = [e for e in result.errors if e.get("field") == "pos"]
+        assert len(pos_errors) > 0
+
+    def test_b2cla_rejects_missing_inv(self, validator):
+        """Validator should reject B2CLA entry without inv array."""
+        data = _minimal_gstr1(
+            gstin="27AABCU9603R1ZM",
+            fp="072024",
+            b2cla=[{"pos": "29"}]
+        )
+        result = validator.validate_gstr1_json(json.dumps(data))
+        assert not result.is_valid
+        inv_errors = [e for e in result.errors if e.get("field") == "inv"]
+        assert len(inv_errors) > 0
+
+    def test_b2cla_rejects_intra_state_pos(self, validator):
+        """B2CLA supplies must be inter-state (pos != supplier state)."""
+        data = _minimal_gstr1(
+            gstin="27AABCU9603R1ZM",
+            fp="072024",
+            b2cla=[{
+                "pos": "27",  # same as supplier state 27
+                "inv": [{
+                    "oinum": "INV001", "inum": "INV001A", "val": 354000.0,
+                    "itms": [{"num": 1, "itm_det": {"rt": 18.0, "txval": 300000.0, "iamt": 54000.0, "camt": 0.0, "samt": 0.0, "csamt": 0.0}}]
+                }]
+            }]
+        )
+        result = validator.validate_gstr1_json(json.dumps(data))
+        assert not result.is_valid
+        pos_errs = [e for e in result.errors if e.get("rule") == "rule" and "Inter-state" in e.get("message", "")]
+        assert len(pos_errs) > 0
+
+    def test_b2cla_rejects_cgst_sgst(self, validator):
+        """B2CLA supplies cannot have CGST or SGST."""
+        data = _minimal_gstr1(
+            gstin="27AABCU9603R1ZM",
+            fp="072024",
+            b2cla=[{
+                "pos": "29",
+                "inv": [{
+                    "oinum": "INV001", "inum": "INV001A", "val": 354000.0,
+                    "itms": [{"num": 1, "itm_det": {"rt": 18.0, "txval": 300000.0, "iamt": 0.0, "camt": 27000.0, "samt": 27000.0, "csamt": 0.0}}]
+                }]
+            }]
+        )
+        result = validator.validate_gstr1_json(json.dumps(data))
+        assert not result.is_valid
+        tax_errs = [e for e in result.errors if e.get("rule") == "rule" and "CGST/SGST" in e.get("message", "")]
+        assert len(tax_errs) > 0
+
+    def test_b2cla_json_writer_roundtrip(self, json_writer, validator, tmp_path):
+        """B2CLA section should be written by GSTR1JsonWriter and pass validation."""
+        data = _minimal_gstr1(
+            gstin="27AABCU9603R1ZM",
+            fp="072024",
+            b2cla=[{
+                "pos": "29",
+                "inv": [{
+                    "oinum": "INV001", "oidt": "10-06-2024",
+                    "inum": "INV001A", "idt": "15-07-2024",
+                    "val": 354000.0, "ecom_gstin": "",
+                    "itms": [{"num": 1, "itm_det": {"rt": 18.0, "txval": 300000.0, "iamt": 54000.0, "camt": 0.0, "samt": 0.0, "csamt": 0.0}}]
+                }]
+            }]
+        )
+        json_path = str(tmp_path / "test_b2cla_roundtrip.json")
+        json_writer.generate_json(data, json_path)
+
+        with open(json_path, "r") as f:
+            content = json.load(f)
+
+        assert "b2cla" in content
+        assert len(content["b2cla"]) == 1
+        assert content["b2cla"][0]["pos"] == "29"
+        assert content["b2cla"][0]["inv"][0]["oinum"] == "INV001"
+
+        with open(json_path, "r") as f:
+            raw_str = f.read()
+        res = validator.validate_gstr1_json(raw_str)
+        assert res.is_valid, f"B2CLA JSON should pass validation: {res.errors}"
+
+    def test_b2cla_excel_generation(self, excel_writer, transform_for_excel, tmp_path):
+        """transform_for_excel should extract b2cla rows and excel writer generate sheet."""
+        import openpyxl
+        json_data = _minimal_gstr1(
+            gstin="27AABCU9603R1ZM",
+            fp="072024",
+            b2cla=[{
+                "pos": "29",
+                "inv": [{
+                    "oinum": "INV001", "oidt": "10-06-2024",
+                    "inum": "INV001A", "idt": "15-07-2024",
+                    "val": 354000.0, "ecom_gstin": "29AALCS5765L1ZP",
+                    "itms": [{"num": 1, "itm_det": {"rt": 18.0, "txval": 300000.0, "iamt": 54000.0, "csamt": 0.0}}]
+                }]
+            }]
+        )
+        excel_data = transform_for_excel(json_data)
+        assert "b2cla" in excel_data
+        assert len(excel_data["b2cla"]) == 1
+        row = excel_data["b2cla"][0]
+        assert row[0] == "INV001"    # oinum
+        assert row[1] == "10-06-2024"# oidt
+        assert row[2] == "INV001A"   # inum
+        assert row[3] == "15-07-2024"# idt
+        assert row[4] == 354000.0    # val
+        assert row[5] == "29"        # pos
+        assert row[7] == 18.0        # rt
+        assert row[8] == 300000.0    # txval
+        assert row[9] == 0.0         # csamt
+        assert row[10] == "29AALCS5765L1ZP" # ecom_gstin
+
+        excel_path = str(tmp_path / "test_b2cla.xlsx")
+        excel_writer.generate_excel(excel_data, excel_path)
+        wb = openpyxl.load_workbook(excel_path)
+        assert "b2cla" in wb.sheetnames
+        ws = wb["b2cla"]
+        assert ws.cell(1, 1).value == "Original Invoice Number"
+        assert ws.cell(1, 3).value == "Revised Invoice Number"
+        assert ws.cell(2, 1).value == "INV001"
+        assert ws.cell(2, 3).value == "INV001A"
+        wb.close()
+
+    def test_b2cla_b2cl_duplicate_warning(self, validator):
+        """Cross-table check should warn if same invoice appears in both B2CL and B2CLA."""
+        data = _minimal_gstr1(
+            gstin="27AABCU9603R1ZM",
+            fp="072024",
+            b2cl=[{
+                "pos": "29",
+                "inv": [{
+                    "inum": "INV001", "idt": "10-06-2024", "val": 354000.0,
+                    "itms": [{"num": 1, "itm_det": {"rt": 18.0, "txval": 300000.0, "iamt": 54000.0, "camt": 0.0, "samt": 0.0, "csamt": 0.0}}]
+                }]
+            }],
+            b2cla=[{
+                "pos": "29",
+                "inv": [{
+                    "oinum": "INV000", "oidt": "01-06-2024",
+                    "inum": "INV001", "idt": "15-07-2024", "val": 354000.0,
+                    "itms": [{"num": 1, "itm_det": {"rt": 18.0, "txval": 300000.0, "iamt": 54000.0, "camt": 0.0, "samt": 0.0, "csamt": 0.0}}]
+                }]
+            }]
+        )
+        result = validator.validate_gstr1_json(json.dumps(data))
+        dup_warnings = [w for w in result.warnings if w.get("rule") == "duplicate_invoice"]
+        assert len(dup_warnings) > 0, "Duplicate invoice in B2CL and B2CLA should raise a warning"
 
 
 # ──────────────────────────────────────────────

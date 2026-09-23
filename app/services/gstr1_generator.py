@@ -114,6 +114,7 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
 
     # Amendment accumulators
     b2ba_groups = {}  # keyed by ctin
+    b2cla_groups = {} # keyed by pos
     b2csa_data = []
     cdnra_groups = {} # keyed by ctin
     cdnura_data = []
@@ -165,14 +166,18 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
             else:
                 _add_b2cs(b2cs_agg, tx, txval, pos_val, is_inter, supplier_state)
 
-        elif classification == 'B2CL':
+        elif classification in ('B2CL', 'B2CLA'):
             # B2CL only applicable for periods before Aug 2024
+            is_b2cl_amendment = is_amendment or (classification == 'B2CLA')
             if rules.get('b2cl_applicable', False):
-                _add_b2cl(b2cl_groups, tx, item_det, pos_val)
-                if tx.invoice_number:
-                    invoice_numbers.append(tx.invoice_number)
+                if is_b2cl_amendment:
+                    _add_b2cl_amendment(b2cla_groups, tx, item_det, pos_val)
+                else:
+                    _add_b2cl(b2cl_groups, tx, item_det, pos_val)
+                    if tx.invoice_number:
+                        invoice_numbers.append(tx.invoice_number)
             else:
-                if is_amendment:
+                if is_b2cl_amendment:
                     _add_b2cs_amendment(b2csa_data, tx, txval, pos_val, is_inter, supplier_state)
                 else:
                     _add_b2cs(b2cs_agg, tx, txval, pos_val, is_inter, supplier_state)
@@ -208,7 +213,7 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
             _add_nil(nil_data, classification, txval, is_inter, tx.customer_gstin)
 
         # HSN aggregation (for all non-amendment transactions)
-        if not is_amendment:
+        if not is_amendment and classification != 'B2CLA':
             _add_hsn(hsn_agg, tx, txval, classification)
 
     # Build HSN output based on period rules
@@ -248,6 +253,8 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
     # Add amendment tables if they have data
     if b2ba_groups:
         json_data["b2ba"] = list(b2ba_groups.values())
+    if b2cla_groups:
+        json_data["b2cla"] = list(b2cla_groups.values())
     if b2csa_data:
         json_data["b2csa"] = b2csa_data
     if cdnra_groups:
@@ -671,6 +678,44 @@ def _add_b2b_amendment(b2ba_groups, tx, item_det, pos_val):
     })
 
 
+def _add_b2cl_amendment(b2cla_groups, tx, item_det, pos_val):
+    """Add B2CL amendment (b2cla) following official GSTN schema."""
+    pos = str(pos_val)
+    if pos not in b2cla_groups:
+        b2cla_groups[pos] = {"pos": pos, "inv": []}
+
+    inv_num = tx.invoice_number or ""
+    orig_inv_num = tx.original_invoice_number or inv_num
+
+    existing_inv = None
+    for inv in b2cla_groups[pos]["inv"]:
+        if inv["inum"] == inv_num and inv.get("oinum") == orig_inv_num:
+            existing_inv = inv
+            break
+
+    # B2CL only has IGST (inter-state)
+    b2cl_item = {
+        "rt": item_det["rt"],
+        "txval": item_det["txval"],
+        "iamt": item_det["iamt"],
+        "csamt": item_det["csamt"]
+    }
+    itm_entry = {"num": len((existing_inv or {}).get("itms", [])) + 1, "itm_det": b2cl_item}
+
+    if existing_inv:
+        existing_inv["itms"].append(itm_entry)
+    else:
+        b2cla_groups[pos]["inv"].append({
+            "oinum": orig_inv_num,
+            "oidt": format_date_gst(tx.original_invoice_date or tx.invoice_date) if (tx.original_invoice_date or tx.invoice_date) else "",
+            "inum": inv_num,
+            "idt": format_date_gst(tx.invoice_date) if tx.invoice_date else "",
+            "val": float(tx.invoice_value or 0),
+            "ecom_gstin": tx.ecommerce_gstin or "",
+            "itms": [{"num": 1, "itm_det": b2cl_item}]
+        })
+
+
 def _add_b2cs_amendment(b2csa_data, tx, txval, pos_val, is_inter, supplier_state):
     """Add B2CS amendment (b2csa) following official GSTN schema."""
     sply_ty = "INTER" if is_inter else "INTRA"
@@ -775,6 +820,7 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
         "b2b": [],
         "b2ba": [],
         "b2cl": [],
+        "b2cla": [],
         "b2cs": [],
         "cdnr": [],
         "cdnur": [],
@@ -851,6 +897,26 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
                     csamt = det.get("csamt", 0)
                     excel_data["b2cl"].append([
                         inum, idt, val, pos, "", rt, txval, csamt, ecom_gstin
+                    ])
+
+    # B2CLA: follows {pos, inv: [{..., itms: [{itm_det}]}]} structure
+    if "b2cla" in json_data:
+        for b2cla in json_data["b2cla"]:
+            pos = b2cla.get("pos", "")
+            for inv in b2cla.get("inv", []):
+                oinum = inv.get("oinum", "")
+                oidt = inv.get("oidt", "")
+                inum = inv.get("inum", "")
+                idt = inv.get("idt", "")
+                val = inv.get("val", 0)
+                ecom_gstin = inv.get("ecom_gstin", "")
+                for itm in inv.get("itms", []):
+                    det = itm.get("itm_det", {})
+                    rt = det.get("rt", 0)
+                    txval = det.get("txval", 0)
+                    csamt = det.get("csamt", 0)
+                    excel_data["b2cla"].append([
+                        oinum, oidt, inum, idt, val, pos, "", rt, txval, csamt, ecom_gstin
                     ])
 
     # CDNR: follows {ctin, nt: [{..., itms: [{itm_det}]}]} structure

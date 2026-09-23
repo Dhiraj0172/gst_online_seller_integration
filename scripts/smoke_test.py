@@ -530,6 +530,42 @@ def run_smoke_test():
             assert validation_result.is_valid is True, f"Validation errors: {validation_result.errors}"
             ctx['gstr1_json_obj'] = gstr1_json_obj
 
+            # Focused historical B2CLA assertion (pre-Aug 2024 period: 072024)
+            from app.services.gstr1_generator import _build_gstr1_json
+            from unittest.mock import Mock
+            hist_tx = Mock(
+                classification_status="B2CL",
+                supply_type="INTER",
+                taxable_value=Decimal('300000'),
+                total_tax=Decimal('54000'),
+                tax_rate=18.0,
+                igst_amount=Decimal('54000'),
+                cgst_amount=Decimal('0'),
+                sgst_amount=Decimal('0'),
+                cess_amount=Decimal('0'),
+                invoice_number="SMK-REV01",
+                invoice_date=None,
+                invoice_value=Decimal('354000'),
+                customer_gstin=None,
+                place_of_supply="29",
+                amendment_flag=True,
+                original_invoice_number="SMK-ORIG01",
+                original_invoice_date=None,
+                ecommerce_gstin="",
+                hsn_sac="6109",
+                uqc="NOS",
+                quantity=Decimal('10'),
+                description="Test Item"
+            )
+            hist_profile = Mock(gstin="27AABCU9603R1ZM", state_code="27")
+            hist_json = _build_gstr1_json(hist_profile, "072024", [hist_tx])
+            assert "b2cla" in hist_json, "Historical pre-Aug-2024 B2CL amendment must generate b2cla"
+            assert len(hist_json["b2cla"]) == 1
+            assert hist_json["b2cla"][0]["inv"][0]["oinum"] == "SMK-ORIG01"
+            hist_val = GSTR1Validator.validate_gstr1_json(json.dumps(hist_json))
+            assert hist_val.is_valid, f"Historical B2CLA payload must validate: {hist_val.errors}"
+            print("  -> Focused historical B2CLA assertion verified (period 072024).", flush=True)
+
         execute_step(15, "Validating generated JSON with 5-layer validator", step_15)
 
         # STEP 16: Reconcile source totals against generated GSTR-1 totals

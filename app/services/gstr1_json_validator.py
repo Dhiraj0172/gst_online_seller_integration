@@ -25,6 +25,7 @@ class GSTR1Validator:
     Official GSTN schema structures validated:
     - b2b: [{ctin, inv: [{inum, idt, val, pos, rchrg, inv_typ, itms: [{num, itm_det}]}]}]
     - b2cl: [{pos, inv: [{inum, idt, val, itms: [{num, itm_det}]}]}]
+    - b2cla: [{pos, inv: [{oinum, oidt, inum, idt, val, itms: [{num, itm_det}]}]}]
     - b2cs: [{sply_ty, pos, typ, rt, txval, iamt, camt, samt, csamt}]
     - cdnr: [{ctin, nt: [{ntty, nt_num, nt_dt, val, pos, itms: [{num, itm_det}]}]}]
     - cdnur: [{ntty, nt_num, nt_dt, val, pos, typ, itms: [{num, itm_det}]}]
@@ -33,7 +34,7 @@ class GSTR1Validator:
     - hsn: {data: [{num, hsn_sc, desc, uqc, qty, val, txval, iamt, camt, samt, csamt}]}
     - doc_issue: {doc_det: [{doc_num, docs: [{num, from, to, totnum, cancel, net_issue}]}]}
 
-    Amendment tables: b2ba, b2csa, cdnra, cdnura follow same nested structures as their base tables.
+    Amendment tables: b2ba, b2cla, b2csa, cdnra, cdnura follow same nested structures as their base tables.
     """
     GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$")
     DATE_PATTERN = re.compile(r"^(0[1-9]|[12][0-9]|3[01])-(0[1-9]|1[0-2])-\d{4}$")
@@ -103,6 +104,10 @@ class GSTR1Validator:
         # Validate known table structures
         if "b2b" in data and not isinstance(data["b2b"], list):
             errors.append(cls._err("b2b", None, "type", "b2b must be an array", "ERROR"))
+        if "b2cl" in data and not isinstance(data["b2cl"], list):
+            errors.append(cls._err("b2cl", None, "type", "b2cl must be an array", "ERROR"))
+        if "b2cla" in data and not isinstance(data["b2cla"], list):
+            errors.append(cls._err("b2cla", None, "type", "b2cla must be an array", "ERROR"))
         if "b2cs" in data and not isinstance(data["b2cs"], list):
             errors.append(cls._err("b2cs", None, "type", "b2cs must be an array", "ERROR"))
         if "cdnr" in data and not isinstance(data["cdnr"], list):
@@ -117,6 +122,19 @@ class GSTR1Validator:
             errors.append(cls._err("hsn", None, "type", "hsn must be an object", "ERROR"))
         if "doc_issue" in data and not isinstance(data["doc_issue"], dict):
             errors.append(cls._err("doc_issue", None, "type", "doc_issue must be an object", "ERROR"))
+
+        # Validate nesting: B2CLA must contain pos/inv structure
+        if "b2cla" in data and isinstance(data["b2cla"], list):
+            for i, b2cla_entry in enumerate(data["b2cla"]):
+                if isinstance(b2cla_entry, dict):
+                    if "pos" not in b2cla_entry:
+                        errors.append(cls._err("pos", None, "required", "B2CLA entry must have pos", "ERROR", "b2cla", i))
+                    if "inv" not in b2cla_entry:
+                        errors.append(cls._err("inv", None, "required", "B2CLA entry must have inv array", "ERROR", "b2cla", i))
+                    elif not isinstance(b2cla_entry.get("inv"), list):
+                        errors.append(cls._err("inv", None, "type", "B2CLA inv must be an array", "ERROR", "b2cla", i))
+                else:
+                    errors.append(cls._err("b2cla", None, "type", "B2CLA entry must be an object", "ERROR", "b2cla", i))
 
         # Validate nesting: CDNR must contain ctin/nt structure
         if "cdnr" in data and isinstance(data["cdnr"], list):
@@ -171,6 +189,36 @@ class GSTR1Validator:
                     if "inv_typ" in inv and inv["inv_typ"] not in cls.VALID_INV_TYPES:
                         errors.append(cls._err("inv_typ", inv["inv_typ"], "value", f"Invalid invoice type. Allowed: {cls.VALID_INV_TYPES}", "ERROR", "b2b", f"{i}.inv.{j}"))
                     cls._validate_itms(inv.get("itms", []), errors, "b2b", f"{i}.inv.{j}")
+
+        # Validate B2CL fields
+        if "b2cl" in data and isinstance(data["b2cl"], list):
+            for i, b2cl_entry in enumerate(data["b2cl"]):
+                if isinstance(b2cl_entry, dict):
+                    pos = str(b2cl_entry.get("pos", ""))
+                    if pos and pos not in cls.STATE_CODES:
+                        errors.append(cls._err("pos", b2cl_entry.get("pos"), "format", "Invalid POS state code", "ERROR", "b2cl", i))
+                    for j, inv in enumerate(b2cl_entry.get("inv", [])):
+                        if isinstance(inv, dict):
+                            if "idt" in inv and inv["idt"] and not cls.DATE_PATTERN.match(inv["idt"]):
+                                errors.append(cls._err("idt", inv["idt"], "format", "Invalid invoice date format", "ERROR", "b2cl", f"{i}.inv.{j}"))
+                            cls._validate_itms(inv.get("itms", []), errors, "b2cl", f"{i}.inv.{j}")
+
+        # Validate B2CLA fields
+        if "b2cla" in data and isinstance(data["b2cla"], list):
+            for i, b2cla_entry in enumerate(data["b2cla"]):
+                if isinstance(b2cla_entry, dict):
+                    pos = str(b2cla_entry.get("pos", ""))
+                    if pos and pos not in cls.STATE_CODES:
+                        errors.append(cls._err("pos", b2cla_entry.get("pos"), "format", "Invalid POS state code", "ERROR", "b2cla", i))
+                    for j, inv in enumerate(b2cla_entry.get("inv", [])):
+                        if isinstance(inv, dict):
+                            if "oidt" in inv and inv["oidt"] and not cls.DATE_PATTERN.match(inv["oidt"]):
+                                errors.append(cls._err("oidt", inv["oidt"], "format", "Invalid original invoice date format", "ERROR", "b2cla", f"{i}.inv.{j}"))
+                            if "idt" in inv and inv["idt"] and not cls.DATE_PATTERN.match(inv["idt"]):
+                                errors.append(cls._err("idt", inv["idt"], "format", "Invalid invoice date format", "ERROR", "b2cla", f"{i}.inv.{j}"))
+                            if "pos" in inv and str(inv["pos"]) not in cls.STATE_CODES:
+                                errors.append(cls._err("pos", inv["pos"], "format", "Invalid POS state code", "ERROR", "b2cla", f"{i}.inv.{j}"))
+                            cls._validate_itms(inv.get("itms", []), errors, "b2cla", f"{i}.inv.{j}")
 
         # Validate B2CS fields
         if "b2cs" in data and isinstance(data["b2cs"], list):
@@ -286,6 +334,48 @@ class GSTR1Validator:
                     if not is_inter and iamt_sum > 0:
                         errors.append(cls._err("tax", None, "rule", "Intra-state supply cannot have IGST", "ERROR", "b2b", f"{i}.inv.{j}"))
 
+        # B2CL business rules
+        if "b2cl" in data and isinstance(data["b2cl"], list):
+            for i, b2cl_entry in enumerate(data["b2cl"]):
+                if isinstance(b2cl_entry, dict):
+                    pos = str(b2cl_entry.get("pos", ""))
+                    supplier_state = (data.get("gstin") or "")[:2]
+                    for j, inv in enumerate(b2cl_entry.get("inv", [])):
+                        if isinstance(inv, dict) and inv.get("itms"):
+                            val = inv.get("val", 0)
+                            txval_sum = sum(float(itm.get("itm_det", {}).get("txval", 0)) for itm in inv.get("itms", []))
+                            iamt_sum = sum(float(itm.get("itm_det", {}).get("iamt", 0)) for itm in inv.get("itms", []))
+                            camt_sum = sum(float(itm.get("itm_det", {}).get("camt", 0)) for itm in inv.get("itms", []))
+                            samt_sum = sum(float(itm.get("itm_det", {}).get("samt", 0)) for itm in inv.get("itms", []))
+                            csamt_sum = sum(float(itm.get("itm_det", {}).get("csamt", 0)) for itm in inv.get("itms", []))
+                            check_amounts(val, txval_sum, iamt_sum, camt_sum, samt_sum, csamt_sum, ("b2cl", f"{i}.inv.{j}"))
+                            inv_pos = str(inv.get("pos") or pos)
+                            if supplier_state and inv_pos and inv_pos == supplier_state:
+                                errors.append(cls._err("pos", inv_pos, "rule", "Inter-state supply cannot have POS equal to supplier state", "ERROR", "b2cl", f"{i}.inv.{j}"))
+                            if camt_sum > 0 or samt_sum > 0:
+                                errors.append(cls._err("tax", None, "rule", "B2CL inter-state supply cannot have CGST/SGST", "ERROR", "b2cl", f"{i}.inv.{j}"))
+
+        # B2CLA business rules
+        if "b2cla" in data and isinstance(data["b2cla"], list):
+            for i, b2cla_entry in enumerate(data["b2cla"]):
+                if isinstance(b2cla_entry, dict):
+                    pos = str(b2cla_entry.get("pos", ""))
+                    supplier_state = (data.get("gstin") or "")[:2]
+                    for j, inv in enumerate(b2cla_entry.get("inv", [])):
+                        if isinstance(inv, dict) and inv.get("itms"):
+                            val = inv.get("val", 0)
+                            txval_sum = sum(float(itm.get("itm_det", {}).get("txval", 0)) for itm in inv.get("itms", []))
+                            iamt_sum = sum(float(itm.get("itm_det", {}).get("iamt", 0)) for itm in inv.get("itms", []))
+                            camt_sum = sum(float(itm.get("itm_det", {}).get("camt", 0)) for itm in inv.get("itms", []))
+                            samt_sum = sum(float(itm.get("itm_det", {}).get("samt", 0)) for itm in inv.get("itms", []))
+                            csamt_sum = sum(float(itm.get("itm_det", {}).get("csamt", 0)) for itm in inv.get("itms", []))
+                            check_amounts(val, txval_sum, iamt_sum, camt_sum, samt_sum, csamt_sum, ("b2cla", f"{i}.inv.{j}"))
+                            inv_pos = str(inv.get("pos") or pos)
+                            if supplier_state and inv_pos and inv_pos == supplier_state:
+                                errors.append(cls._err("pos", inv_pos, "rule", "Inter-state supply cannot have POS equal to supplier state", "ERROR", "b2cla", f"{i}.inv.{j}"))
+                            if camt_sum > 0 or samt_sum > 0:
+                                errors.append(cls._err("tax", None, "rule", "B2CLA inter-state supply cannot have CGST/SGST", "ERROR", "b2cla", f"{i}.inv.{j}"))
+
         # B2CS business rules
         if "b2cs" in data:
              for i, b2cs in enumerate(data["b2cs"]):
@@ -362,6 +452,21 @@ class GSTR1Validator:
                 warnings.append(cls._err("txval", hsn_txval_total, "reconciliation",
                                        f"HSN taxable value ({hsn_txval_total}) differs significantly from invoice total ({inv_txval_total})",
                                        "WARNING", "hsn", None))
+
+        # Cross-table: Ensure B2CLA does not duplicate invoices reported in B2CL for the same period
+        b2cl_inums = set()
+        for b2cl in data.get("b2cl", []):
+            if isinstance(b2cl, dict):
+                for inv in b2cl.get("inv", []):
+                    if isinstance(inv, dict) and inv.get("inum"):
+                        b2cl_inums.add(inv["inum"])
+        for i, b2cla in enumerate(data.get("b2cla", [])):
+            if isinstance(b2cla, dict):
+                for j, inv in enumerate(b2cla.get("inv", [])):
+                    if isinstance(inv, dict) and inv.get("inum") and inv["inum"] in b2cl_inums:
+                        warnings.append(cls._err("inum", inv["inum"], "duplicate_invoice",
+                                               f"Invoice {inv['inum']} appears in both B2CL and B2CLA",
+                                               "WARNING", "b2cla", f"{i}.inv.{j}"))
 
         is_valid = len(errors) == 0
         return ValidationResult(is_valid, "CrossTable", errors, warnings)

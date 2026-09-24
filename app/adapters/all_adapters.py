@@ -37,6 +37,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 import openpyxl
 
 from .base import ImportResult, ImportRow, ImportRowStatus, PlatformAdapter
+from .canonical import CanonicalTransaction
 from app.utils.csv_utils import read_csv_rows
 from app.utils.date_utils import format_date_gst, parse_date
 from app.utils.gstin_validator import validate_gstin

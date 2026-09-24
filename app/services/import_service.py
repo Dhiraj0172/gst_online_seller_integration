@@ -1,82 +1,155 @@
-import openpyxl
+"""Common marketplace import service and orchestration pipeline.
+
+This module provides the central, authoritative import pipeline used by all
+marketplace adapters:
+
+  raw file
+  -> adapter detection / resolution
+  -> file validation / structure recognition
+  -> duplicate file check
+  -> adapter parsing
+  -> canonical transaction representation
+  -> normalization & supply classification
+  -> duplicate transaction detection (in-file & database)
+  -> batched persistence (HIGH-02 relationship-based linkage)
+  -> ImportHistory & result reporting
+
+Guarantees:
+- Relationship-based RawImport linkage (Transaction.raw_import = raw_import)
+- Batched database flushes without per-row queries
+- Cross-import and in-file duplicate detection (never double-counted)
+- Complete rollback on failure (zero orphaned transactions/raw imports)
+- Strict multi-tenant / profile scoping
+- Safe error disclosure (MED-01)
+"""
+import hashlib
 import json
 import os
-from typing import Dict, Any, Iterator, List, Optional
-from decimal import Decimal
 from datetime import datetime
-from app.adapters.registry import get_adapter, detect_platform
+from decimal import Decimal
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
+import openpyxl
+
+from app.adapters.all_adapters import BaseGenericAdapter
 from app.adapters.base import ImportResult, ImportRow, ImportRowStatus
-from app.models import ImportHistory, RawImport, Transaction
+from app.adapters.canonical import CanonicalTransaction
+from app.adapters.registry import detect_platform, get_adapter
 from app.extensions import db
-from app.services.classification_service import classify_transaction, determine_supply_type
-from app.services.duplicate_service import build_fingerprint, find_existing_transactions
-from app.services.gst_rules import get_rules_for_period
+from app.models import GSTProfile, ImportHistory, RawImport, Transaction
+from app.services.classification_service import classify_transaction
+from app.services.duplicate_service import (
+    DUPLICATE_EXISTING,
+    DUPLICATE_IN_FILE,
+    build_fingerprint,
+    duplicate_envelope,
+    duplicate_report_entry,
+    file_duplicate_report,
+    find_existing_transactions,
+    find_prior_file_import,
+)
 from app.utils.csv_utils import read_csv_rows
+from app.utils.date_utils import parse_date
+from app.utils.state_codes import resolve_pos_code
+
+# Re-export for compatibility with tcs_service and other modules
+__all__ = [
+    'ImportProcessingResult',
+    'validate_file',
+    'read_chunks',
+    'process_import',
+    '_create_transaction_from_normalized',
+    'ImportResult',
+    'ImportRow',
+    'ImportRowStatus',
+]
 
 
 class ImportProcessingResult:
+    """Detailed summary of the import pipeline execution."""
+
     def __init__(self):
-        self.total_rows = 0
-        self.success_rows = 0
-        self.warning_rows = 0
-        self.error_rows = 0
-        self.skipped_rows = 0
-        self.errors = []
-        self.warnings = []
-        self.stats = {}
-        self.import_history_id = None
+        self.total_rows: int = 0
+        self.success_rows: int = 0
+        self.warning_rows: int = 0
+        self.error_rows: int = 0
+        self.skipped_rows: int = 0
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+        self.validation_errors: List[str] = []
+        self.stats: Dict[str, Any] = {}
+        self.import_history_id: Optional[int] = None
+        self.status: str = 'PENDING'
+        self.error_summary: Optional[str] = None
+        self.warning_summary: Optional[str] = None
+        self.flash_messages: List[Tuple[str, str]] = []
 
 
 def validate_file(file_path: str) -> bool:
-    if not file_path.endswith(('.xlsx', '.csv', '.xls')):
-        raise ValueError("Invalid file format")
+    """Verify that the uploaded file has a supported extension."""
+    if not file_path.lower().endswith(('.xlsx', '.csv', '.xls')):
+        raise ValueError("Invalid file format. Please upload an Excel (.xlsx/.xls) or CSV file.")
     return True
 
 
-def read_chunks(file_path: str, chunk_size: int = 1000) -> Iterator[List[Dict[str, Any]]]:
-    """Read an Excel or CSV file in chunks, yielding lists of row dicts.
+def _first_parsed_sheet(parse_result: ImportResult) -> str:
+    """Return the primary sheet title parsed from the file."""
+    sheets = parse_result.metadata.get('sheets_parsed') or []
+    return sheets[0] if sheets else 'Sheet1'
 
-    Both formats expose the same row dicts (header keys + ``_row_number`` /
-    ``_sheet_name``) so the adapter normalization path is identical.
-    """
+
+def _safe_decimal(val: Any, default: Decimal = Decimal('0')) -> Decimal:
+    """Safely convert any value to Decimal, falling back to default."""
+    if val is None or val == '':
+        return default
+    if isinstance(val, Decimal):
+        return val
+    try:
+        return Decimal(str(val))
+    except Exception:
+        return default
+
+
+def read_chunks(file_path: str, chunk_size: int = 1000) -> Iterator[List[Dict[str, Any]]]:
+    """Read an Excel or CSV file in chunks, yielding lists of row dicts."""
     if file_path.lower().endswith('.csv'):
         yield from _read_csv_chunks(file_path, chunk_size)
         return
 
     wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
     ws = wb.active
-    
+
     headers = None
     chunk = []
-    
+
     for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
         if not any(row):
             continue
-            
+
         if headers is None:
             headers = [str(c).strip() if c else f"col_{i}" for i, c in enumerate(row)]
             continue
-            
+
         raw_data = dict(zip(headers, row))
         if not any(v for v in raw_data.values() if v is not None and str(v).strip()):
             continue
-            
+
         raw_data['_row_number'] = row_idx
         raw_data['_sheet_name'] = ws.title
         chunk.append(raw_data)
-        
+
         if len(chunk) >= chunk_size:
             yield chunk
             chunk = []
-            
+
     if chunk:
         yield chunk
-        
+
     wb.close()
 
 
 def _read_csv_chunks(file_path: str, chunk_size: int = 1000) -> Iterator[List[Dict[str, Any]]]:
-    """Chunked reader for CSV sources (UTF-8/BOM aware, delimiter detected)."""
+    """Chunked reader for CSV sources."""
     csv_result = read_csv_rows(file_path)
     if csv_result.errors:
         raise ValueError('; '.join(csv_result.errors))
@@ -112,195 +185,393 @@ def process_import(
     platform_name: str,
     user_id: int,
     return_period: str,
-    financial_year: str
+    financial_year: str,
+    allow_duplicate_file: bool = False,
+    classification_fn: Optional[Callable] = None,
+    import_history_id: Optional[int] = None,
 ) -> ImportProcessingResult:
-    """
-    Complete import pipeline:
-    1. Detect platform (if not specified)
-    2. Parse file using adapter
-    3. Validate and normalize each row
-    4. Create RawImport records
-    5. Classify transactions
-    6. Create Transaction records
-    7. Update ImportHistory with stats
+    """Execute the canonical import pipeline for any marketplace report.
+
+    Phases:
+    1. Adapter detection / resolution
+    2. File format & structure validation
+    3. Duplicate file detection
+    4. Adapter parsing into canonical transactions
+    5. Batch duplicate detection (in-file and cross-import)
+    6. Batched persistence (HIGH-02 relationship-based linkage)
+    7. ImportHistory recording and status reporting
     """
     result = ImportProcessingResult()
     start_time = datetime.utcnow()
-    
-    # Create ImportHistory record
-    import_history = ImportHistory(
-        user_id=user_id,
-        profile_id=profile_id,
-        file_name=os.path.basename(file_path),
-        original_file_name=os.path.basename(file_path),
-        platform_name=platform_name,
-        return_period=return_period,
-        financial_year=financial_year,
-        processing_status='PARSING',
-        processing_started_at=start_time,
-        raw_file_path=file_path
-    )
-    db.session.add(import_history)
-    db.session.commit()
+    wb = None
+
+    # Step 1: Ensure ImportHistory record exists
+    if import_history_id is not None:
+        import_history = db.session.get(ImportHistory, import_history_id)
+        if not import_history:
+            raise ValueError(f"ImportHistory record {import_history_id} not found.")
+        file_hash = import_history.file_hash
+        file_size = import_history.file_size
+    else:
+        sha256_hash = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for byte_block in iter(lambda: f.read(65536), b""):
+                sha256_hash.update(byte_block)
+        file_hash = sha256_hash.hexdigest()
+        file_size = os.path.getsize(file_path)
+
+        import_history = ImportHistory(
+            user_id=user_id,
+            profile_id=profile_id,
+            file_name=os.path.basename(file_path),
+            original_file_name=os.path.basename(file_path),
+            file_hash=file_hash,
+            file_size=file_size,
+            platform_name=platform_name or 'Generic',
+            return_period=return_period,
+            financial_year=financial_year,
+            processing_status='PROCESSING',
+            processing_started_at=start_time,
+            raw_file_path=file_path,
+        )
+        db.session.add(import_history)
+        db.session.commit()
+
     result.import_history_id = import_history.id
-    
+
     try:
-        # Get or detect adapter
-        adapter = get_adapter(platform_name)
-        if not adapter:
-            # Try auto-detection
-            wb = openpyxl.load_workbook(file_path, read_only=True)
-            adapter = detect_platform(wb, os.path.basename(file_path))
-            wb.close()
-            
-        if not adapter:
-            raise ValueError(f"No adapter found for platform: {platform_name}")
-            
-        # Validate file structure (Excel as a workbook, CSV as a path)
-        is_csv = file_path.lower().endswith('.csv')
+        # Step 2: Adapter detection & file handle loading
+        filename = os.path.basename(file_path)
+        is_csv = filename.lower().endswith('.csv')
+        adapter = get_adapter(platform_name) if platform_name and platform_name != 'Generic' else None
         source = file_path
+
         if not is_csv:
-            source = openpyxl.load_workbook(file_path, read_only=True)
+            try:
+                wb = openpyxl.load_workbook(file_path, data_only=True)
+                source = wb
+            except Exception as exc:
+                import_history.processing_status = 'FAILED'
+                import_history.error_summary = json.dumps({
+                    'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
+                               'error_rows': 0, 'skipped_rows': 0},
+                    'errors': [{'code': 'UNREADABLE_SOURCE',
+                                'message': f'Unsupported or unreadable file: {exc}'}],
+                })
+                import_history.processing_completed_at = datetime.utcnow()
+                db.session.commit()
+                result.status = 'REJECTED_UNREADABLE'
+                result.stats['status'] = 'FAILED'
+                result.errors.append('Unsupported or unreadable file. Upload an Excel (.xlsx/.xls) or CSV marketplace export.')
+                return result
+
+        if not adapter:
+            adapter = detect_platform(source, filename)
+        if not adapter:
+            adapter = BaseGenericAdapter()
+
+        # Step 3: CSV Readability Check
+        if is_csv:
+            csv_check = read_csv_rows(file_path)
+            if csv_check.errors:
+                import_history.processing_status = 'FAILED'
+                import_history.error_summary = json.dumps({
+                    'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
+                               'error_rows': 0, 'skipped_rows': 0},
+                    'errors': [{'code': 'UNREADABLE_SOURCE', 'message': csv_check.errors[0]}],
+                })
+                import_history.processing_completed_at = datetime.utcnow()
+                db.session.commit()
+                result.status = 'REJECTED_UNREADABLE'
+                result.stats['status'] = 'FAILED'
+                result.errors.append(csv_check.errors[0])
+                return result
+
+        # Step 4: Validate File Structure / Required Headers
         is_valid, validation_errors = adapter.validate(source)
-        if not is_csv:
-            source.close()
-        
         if not is_valid:
-            raise ValueError(f"File validation failed: {', '.join(validation_errors)}")
-            
-        import_history.processing_status = 'NORMALIZING'
-        db.session.flush()
-        
-        # Get profile for seller GSTIN
-        from app.models import GSTProfile
+            import_history.processing_status = 'FAILED'
+            import_history.error_summary = json.dumps({
+                'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
+                           'error_rows': 0, 'skipped_rows': 0},
+                'errors': [{'code': 'INVALID_FILE', 'message': message}
+                           for message in validation_errors],
+            })
+            import_history.processing_completed_at = datetime.utcnow()
+            db.session.commit()
+            result.status = 'REJECTED_INVALID'
+            result.stats['status'] = 'FAILED'
+            result.validation_errors = list(validation_errors)
+            result.errors = list(validation_errors)
+            return result
+
+        # Step 5: Duplicate File Detection
+        prior_import = find_prior_file_import(profile_id, file_hash, platform_name)
+        if prior_import is not None and not allow_duplicate_file:
+            report = file_duplicate_report(prior_import)
+            import_history.processing_status = 'FAILED'
+            import_history.error_summary = json.dumps({
+                'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
+                           'error_rows': 0, 'skipped_rows': 0},
+                'errors': [report],
+            })
+            import_history.processing_completed_at = datetime.utcnow()
+            db.session.commit()
+            result.status = 'REJECTED_DUPLICATE_FILE'
+            result.stats['status'] = 'FAILED'
+            result.errors.append(report['message'])
+            return result
+
+        # Step 6: Parse File using Adapter
+        parse_result = adapter.parse(source, filename)
+        if parse_result.errors:
+            import_history.processing_status = 'FAILED'
+            import_history.error_summary = json.dumps({
+                'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
+                           'error_rows': 0, 'skipped_rows': 0},
+                'errors': [{'code': 'UNREADABLE_SOURCE', 'message': message}
+                           for message in parse_result.errors],
+            })
+            import_history.processing_completed_at = datetime.utcnow()
+            db.session.commit()
+            result.status = 'REJECTED_UNREADABLE'
+            result.stats['status'] = 'FAILED'
+            result.errors.extend(parse_result.errors)
+            return result
+
+        # Step 7: Batch duplicate check against database
+        candidate_fingerprints = [
+            build_fingerprint(r.normalized_data or {}, profile_id, platform_name)
+            for r in parse_result.rows
+        ]
+        existing_by_fp = find_existing_transactions(profile_id, candidate_fingerprints) if candidate_fingerprints else {}
+
         profile = db.session.get(GSTProfile, profile_id)
         seller_gstin = profile.gstin if profile else ''
         seller_state = profile.state_code if profile else ''
 
-        # Duplicate bookkeeping: rows already stored for this profile, plus rows
-        # seen earlier in this very file. Duplicates are marked, never dropped.
+        total_rows = 0
+        success_rows = 0
+        error_rows = 0
+        warning_rows = 0
+        skipped_rows = 0
+        rejections = []
+        duplicates = []
+        warning_report = []
         seen_in_file: Dict[str, int] = {}
-        duplicate_rows = 0
-        duplicate_entries: List[Dict[str, Any]] = []
-        
-        # Process in chunks
-        for chunk in read_chunks(file_path):
-            chunk_prepared = []
-            chunk_fps = []
-            for raw_row in chunk:
-                row_number = raw_row.pop('_row_number', 0)
-                sheet_name = raw_row.pop('_sheet_name', '')
-                normalized = adapter.normalize(raw_row)
-                fp = build_fingerprint(normalized, profile_id, platform_name)
-                chunk_prepared.append((row_number, sheet_name, raw_row, normalized, fp))
-                if fp not in seen_in_file:
-                    chunk_fps.append(fp)
 
-            existing_by_fp = find_existing_transactions(profile_id, chunk_fps) if chunk_fps else {}
+        # GSTR-1 Table mappings
+        gstr1_table_map = {
+            'B2B': 'b2b',
+            'B2CS': 'b2cs',
+            'B2CL': 'b2cl',
+            'CDNR': 'cdnr',
+            'CDNUR': 'cdnur',
+            'NIL': 'nil',
+            'EXEMPT': 'nil',
+            'NONGST': 'nil',
+            'EXPORT': 'exp',
+            'SEZ': 'exp',
+            'UNKNOWN': 'unknown'
+        }
 
-            for row_number, sheet_name, raw_row, normalized, fingerprint in chunk_prepared:
-                result.total_rows += 1
+        # Step 8: Row-by-row normalization, duplicate marking, and batched persistence
+        for row in parse_result.rows:
+            total_rows += 1
+            norm = row.normalized_data or {}
+            fingerprint = build_fingerprint(norm, profile_id, platform_name)
 
-                # Create RawImport record
-                raw_import = RawImport(
-                    import_history_id=import_history.id,
-                    sheet_name=sheet_name,
-                    row_number=row_number,
-                    raw_data=json.dumps(raw_row, default=str),
-                    status='PENDING'
+            # In-file and existing duplicate detection
+            duplicate_entry = None
+            if fingerprint in seen_in_file:
+                first_row = seen_in_file[fingerprint]
+                duplicate_entry = duplicate_report_entry(
+                    row.row_number, DUPLICATE_IN_FILE,
+                    f'Duplicate of row {first_row} in this file',
+                    duplicate_of_row=first_row,
                 )
-                db.session.add(raw_import)
+            elif fingerprint in existing_by_fp:
+                prior_tx = existing_by_fp[fingerprint]
+                duplicate_entry = duplicate_report_entry(
+                    row.row_number, DUPLICATE_EXISTING,
+                    f'Already imported: transaction #{prior_tx.id} '
+                    f'(import #{prior_tx.import_history_id})',
+                    duplicate_of_transaction_id=prior_tx.id,
+                    duplicate_of_import_id=prior_tx.import_history_id,
+                )
 
-                try:
-                    row_errors = list(normalized.get('_errors') or [])
+            if duplicate_entry is not None:
+                skipped_rows += 1
+                duplicates.append(duplicate_entry)
+                raw_imp = RawImport(
+                    import_history_id=import_history.id,
+                    sheet_name=getattr(row, 'sheet_name', '') or _first_parsed_sheet(parse_result),
+                    row_number=row.row_number,
+                    raw_data=json.dumps({k: str(v) for k, v in row.raw_data.items() if v is not None}),
+                    status='SKIPPED',
+                    errors=json.dumps([duplicate_entry]),
+                    warnings=json.dumps(row.warnings) if row.warnings else None,
+                )
+                db.session.add(raw_imp)
+                if total_rows % 1000 == 0:
+                    db.session.flush()
+                continue
 
-                    # Duplicate detection against this file and stored data
-                    duplicate_reason = None
-                    if fingerprint in seen_in_file:
-                        duplicate_reason = f'Duplicate of row {seen_in_file[fingerprint]} in this file'
-                    elif fingerprint in existing_by_fp:
-                        prior_tx = existing_by_fp[fingerprint]
-                        duplicate_reason = (
-                            f'Already imported: transaction #{prior_tx.id} '
-                            f'(import #{prior_tx.import_history_id})'
-                        )
-                    if duplicate_reason:
-                        seen_in_file.setdefault(fingerprint, row_number)
-                        duplicate_rows += 1
-                        duplicate_entries.append({'row': row_number, 'message': duplicate_reason})
-                        raw_import.status = 'SKIPPED'
-                        raw_import.errors = json.dumps([duplicate_reason])
-                        result.skipped_rows += 1
-                        continue
-                    seen_in_file.setdefault(fingerprint, row_number)
+            seen_in_file.setdefault(fingerprint, row.row_number)
 
-                    if row_errors:
-                        raw_import.status = 'ERROR'
-                        raw_import.errors = json.dumps(row_errors)
-                        result.error_rows += 1
-                        result.errors.append(f"Row {row_number}: {'; '.join(row_errors)}")
-                        continue
+            if row.status is ImportRowStatus.SUCCESS or row.status.value == 'SUCCESS':
+                success_rows += 1
+            elif row.status is ImportRowStatus.WARNING or row.status.value == 'WARNING':
+                warning_rows += 1
+            else:
+                error_rows += 1
+                rejections.append(duplicate_report_entry(
+                    row.row_number, 'ROW_REJECTED', '; '.join(row.errors),
+                ))
 
-                    # Determine supply type (INTRA/INTER)
-                    supply_type = determine_supply_type(
-                        seller_gstin=seller_gstin,
-                        customer_gstin=normalized.get('customer_gstin'),
-                        place_of_supply=normalized.get('place_of_supply', ''),
-                        seller_state=seller_state
-                    )
-                    normalized['supply_type'] = supply_type
-                    normalized['seller_gstin'] = seller_gstin
-                    normalized['seller_state'] = seller_state
+            for warning in row.warnings:
+                warning_report.append(duplicate_report_entry(
+                    row.row_number, 'ROW_WARNING', warning,
+                ))
 
-                    # Classify transaction
-                    classification = classify_transaction(normalized, profile, return_period)
-                    normalized['classification'] = classification
+            # RawImport record
+            raw_imp = RawImport(
+                import_history_id=import_history.id,
+                sheet_name=getattr(row, 'sheet_name', '') or _first_parsed_sheet(parse_result),
+                row_number=row.row_number,
+                raw_data=json.dumps({k: str(v) for k, v in row.raw_data.items() if v is not None}),
+                status=row.status.value,
+                errors=json.dumps(row.errors) if row.errors else None,
+                warnings=json.dumps(row.warnings) if row.warnings else None,
+            )
+            db.session.add(raw_imp)
 
-                    # Create Transaction record
-                    transaction = _create_transaction_from_normalized(
-                        normalized=normalized,
-                        import_history_id=import_history.id,
-                        profile_id=profile_id,
-                        source_platform=platform_name,
-                        classification=classification,
-                        return_period=return_period,
-                        raw_import=raw_import
-                    )
-                    transaction.row_fingerprint = fingerprint
+            if row.status is ImportRowStatus.ERROR or row.status.value == 'ERROR':
+                if total_rows % 1000 == 0:
+                    db.session.flush()
+                continue
 
-                    db.session.add(transaction)
+            # Normalized Transaction persistence
+            if norm and norm.get('invoice_number'):
+                inv_date = parse_date(norm.get('invoice_date'))
+                note_date = parse_date(norm.get('note_date'))
+                orig_inv_date = parse_date(norm.get('original_invoice_date'))
 
-                    # Update RawImport status
-                    raw_import.status = 'SUCCESS'
+                # Supply classification
+                raw_supply = str(norm.get('supply_type') or '').strip().upper()
+                if raw_supply in ('B2B', 'B2CS', 'B2CL', 'CDNR', 'CDNUR', 'NIL', 'EXEMPT', 'NONGST', 'EXPORT', 'SEZ'):
+                    supply_type = raw_supply
+                else:
+                    classify = classification_fn or classify_transaction
+                    supply_type = classify(norm, profile, return_period)
 
-                    result.success_rows += 1
+                cgst = _safe_decimal(norm.get('cgst_amount'))
+                sgst = _safe_decimal(norm.get('sgst_amount'))
+                igst = _safe_decimal(norm.get('igst_amount'))
+                cess = _safe_decimal(norm.get('cess_amount'))
+                total_tax = cgst + sgst + igst + cess
 
-                except Exception as e:
-                    raw_import.status = 'ERROR'
-                    raw_import.errors = json.dumps([str(e)])
-                    result.error_rows += 1
-                    result.errors.append(f"Row {row_number}: {str(e)}")
+                tx = Transaction(
+                    import_history_id=import_history.id,
+                    profile_id=profile_id,
+                    raw_import=raw_imp,
+                    source_platform=platform_name,
+                    source_row_id=str(
+                        norm.get('order_item_id')
+                        or norm.get('sub_order_id')
+                        or norm.get('order_id')
+                        or row.row_number
+                    ),
+                    order_id=norm.get('order_id'),
+                    invoice_number=norm.get('invoice_number'),
+                    invoice_date=inv_date,
+                    invoice_type=norm.get('invoice_type', 'regular'),
+                    customer_name=norm.get('customer_name'),
+                    customer_gstin=norm.get('customer_gstin'),
+                    place_of_supply=resolve_pos_code(norm.get('place_of_supply'), norm.get('customer_gstin'), seller_state),
+                    seller_gstin=seller_gstin,
+                    item_code=norm.get('item_code'),
+                    hsn_sac=norm.get('hsn_sac'),
+                    description=norm.get('description'),
+                    quantity=_safe_decimal(norm.get('quantity'), Decimal('1')),
+                    uqc=norm.get('uqc', 'NOS'),
+                    taxable_value=_safe_decimal(norm.get('taxable_value')),
+                    discount=_safe_decimal(norm.get('discount')) if norm.get('discount') else None,
+                    cgst_rate=_safe_decimal(norm.get('cgst_rate')),
+                    cgst_amount=cgst,
+                    sgst_rate=_safe_decimal(norm.get('sgst_rate')),
+                    sgst_amount=sgst,
+                    igst_rate=_safe_decimal(norm.get('igst_rate')),
+                    igst_amount=igst,
+                    cess_rate=_safe_decimal(norm.get('cess_rate')),
+                    cess_amount=cess,
+                    total_tax=total_tax,
+                    invoice_value=_safe_decimal(norm.get('invoice_value')),
+                    tax_rate=_safe_decimal(norm.get('tax_rate')),
+                    supply_type=supply_type,
+                    reverse_charge='Y' if str(norm.get('reverse_charge', 'N')).upper() in ('Y', 'YES', 'TRUE', '1') else 'N',
+                    ecommerce_gstin=norm.get('ecommerce_gstin'),
+                    marketplace_name=norm.get('marketplace_name', platform_name),
+                    note_type=norm.get('note_type'),
+                    note_number=norm.get('note_number'),
+                    note_date=note_date,
+                    original_invoice_number=norm.get('original_invoice_number'),
+                    original_invoice_date=orig_inv_date,
+                    nil_rated_flag=(supply_type == 'NIL'),
+                    exempt_flag=(supply_type == 'EXEMPT'),
+                    non_gst_flag=(supply_type == 'NONGST'),
+                    return_flag=bool(norm.get('return_flag', False)),
+                    cancellation_flag=bool(norm.get('cancellation_flag', False)),
+                    amendment_flag=bool(norm.get('amendment_flag', False)),
+                    validation_status='VALID',
+                    classification_status=supply_type,
+                    gstr1_table=gstr1_table_map.get(supply_type, 'unknown'),
+                    source_metadata=json.dumps(norm.get('source_metadata', {}), default=str),
+                    row_fingerprint=fingerprint,
+                )
+                db.session.add(tx)
 
-            # Batch flush at chunk boundary
-            db.session.flush()
+            if total_rows % 1000 == 0:
+                db.session.flush()
 
-        # Update import history with final stats
-        import_history.total_rows = result.total_rows
-        import_history.success_rows = result.success_rows
-        import_history.error_rows = result.error_rows
-        import_history.warning_rows = result.warning_rows
-        import_history.skipped_rows = result.skipped_rows
-        import_history.processing_status = 'COMPLETED' if result.error_rows == 0 else 'PARTIAL'
+        # Step 9: Final flush and ImportHistory bookkeeping
+        db.session.flush()
+
+        counts = {
+            'total_rows': total_rows,
+            'success_rows': success_rows,
+            'warning_rows': warning_rows,
+            'error_rows': error_rows,
+            'skipped_rows': skipped_rows,
+            'duplicate_rows': skipped_rows,
+        }
+        import_history.total_rows = total_rows
+        import_history.success_rows = success_rows
+        import_history.error_rows = error_rows
+        import_history.warning_rows = warning_rows
+        import_history.skipped_rows = skipped_rows
+        import_history.processing_status = 'COMPLETED' if not (
+            error_rows or warning_rows or skipped_rows
+        ) else 'PARTIAL'
+
+        error_summary, warning_summary = duplicate_envelope(
+            rejections, duplicates, warning_report, counts
+        )
+        import_history.error_summary = error_summary if rejections else None
+        import_history.warning_summary = warning_summary if (duplicates or warning_report) else None
         import_history.processing_completed_at = datetime.utcnow()
         import_history.processing_duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
 
-        # Flush pending objects so _update_import_totals can query Transaction table
-        db.session.flush()
-
-        # Calculate totals
-        _update_import_totals(import_history)
-
         db.session.commit()
+
+        result.total_rows = total_rows
+        result.success_rows = success_rows
+        result.error_rows = error_rows
+        result.warning_rows = warning_rows
+        result.skipped_rows = skipped_rows
+        result.error_summary = import_history.error_summary
+        result.warning_summary = import_history.warning_summary
+        result.status = import_history.processing_status
         result.stats['status'] = import_history.processing_status
 
     except Exception as e:
@@ -310,12 +581,25 @@ def process_import(
             if failed_ih:
                 failed_ih.processing_status = 'FAILED'
                 failed_ih.processing_completed_at = datetime.utcnow()
-                failed_ih.error_summary = json.dumps([str(e)])
+                failed_ih.error_summary = json.dumps({
+                    'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
+                               'error_rows': 1, 'skipped_rows': 0},
+                    'errors': [{'code': 'UNEXPECTED_ERROR', 'message': str(e)}],
+                })
                 db.session.commit()
         except Exception:
-            pass
-        result.errors.append(str(e))
+            db.session.rollback()
+        result.status = 'FAILED'
         result.stats['status'] = 'FAILED'
+        result.errors.append(str(e))
+        raise
+
+    finally:
+        if wb:
+            try:
+                wb.close()
+            except Exception:
+                pass
 
     return result
 
@@ -330,42 +614,11 @@ def _create_transaction_from_normalized(
     return_period: str = '',
     raw_import: Optional[RawImport] = None,
 ) -> Transaction:
-    """Create Transaction model from normalized data."""
-    
-    # Parse date
-    invoice_date = None
-    date_str = normalized.get('invoice_date', '')
-    if date_str:
-        for fmt in ('%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d'):
-            try:
-                invoice_date = datetime.strptime(str(date_str), fmt).date()
-                break
-            except:
-                continue
-    
-    # Parse note date
-    note_date = None
-    note_date_str = normalized.get('note_date', '')
-    if note_date_str:
-        for fmt in ('%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d'):
-            try:
-                note_date = datetime.strptime(str(note_date_str), fmt).date()
-                break
-            except:
-                continue
-                
-    # Parse original invoice date
-    original_invoice_date = None
-    orig_date_str = normalized.get('original_invoice_date', '')
-    if orig_date_str:
-        for fmt in ('%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y', '%Y/%m/%d'):
-            try:
-                original_invoice_date = datetime.strptime(str(orig_date_str), fmt).date()
-                break
-            except:
-                continue
-    
-    # Determine GSTR-1 table mapping
+    """Create a Transaction entity from normalized data (for backward compatibility)."""
+    inv_date = parse_date(normalized.get('invoice_date'))
+    note_date = parse_date(normalized.get('note_date'))
+    orig_inv_date = parse_date(normalized.get('original_invoice_date'))
+
     gstr1_table_map = {
         'B2B': 'b2b',
         'B2CS': 'b2cs',
@@ -379,17 +632,28 @@ def _create_transaction_from_normalized(
         'SEZ': 'exp',
         'UNKNOWN': 'unknown'
     }
-    
+
+    cgst = _safe_decimal(normalized.get('cgst_amount'))
+    sgst = _safe_decimal(normalized.get('sgst_amount'))
+    igst = _safe_decimal(normalized.get('igst_amount'))
+    cess = _safe_decimal(normalized.get('cess_amount'))
+    total_tax = cgst + sgst + igst + cess
+
     extra_kwargs = {'raw_import': raw_import} if raw_import is not None else {'raw_import_id': raw_import_id}
     return Transaction(
         import_history_id=import_history_id,
         profile_id=profile_id,
         source_platform=source_platform,
-        source_row_id=normalized.get('order_id', ''),
-        order_id=normalized.get('order_id', ''),
+        source_row_id=str(
+            normalized.get('order_item_id')
+            or normalized.get('sub_order_id')
+            or normalized.get('order_id')
+            or ''
+        ),
+        order_id=normalized.get('order_id'),
         invoice_number=normalized.get('invoice_number', ''),
         **extra_kwargs,
-        invoice_date=invoice_date,
+        invoice_date=inv_date,
         invoice_type=normalized.get('invoice_type', 'regular'),
         customer_name=normalized.get('customer_name', ''),
         customer_gstin=normalized.get('customer_gstin', ''),
@@ -398,69 +662,38 @@ def _create_transaction_from_normalized(
         item_code=normalized.get('item_code', ''),
         hsn_sac=normalized.get('hsn_sac', ''),
         description=normalized.get('description', ''),
-        quantity=Decimal(str(normalized.get('quantity', 0))) if normalized.get('quantity') else None,
-        uqc=normalized.get('uqc', ''),
-        taxable_value=Decimal(str(normalized.get('taxable_value', 0))) if normalized.get('taxable_value') else None,
-        discount=Decimal(str(normalized.get('discount', 0))) if normalized.get('discount') else None,
-        cgst_rate=Decimal(str(normalized.get('cgst_rate', 0))) if normalized.get('cgst_rate') else None,
-        cgst_amount=Decimal(str(normalized.get('cgst_amount', 0))) if normalized.get('cgst_amount') else None,
-        sgst_rate=Decimal(str(normalized.get('sgst_rate', 0))) if normalized.get('sgst_rate') else None,
-        sgst_amount=Decimal(str(normalized.get('sgst_amount', 0))) if normalized.get('sgst_amount') else None,
-        igst_rate=Decimal(str(normalized.get('igst_rate', 0))) if normalized.get('igst_rate') else None,
-        igst_amount=Decimal(str(normalized.get('igst_amount', 0))) if normalized.get('igst_amount') else None,
-        cess_rate=Decimal(str(normalized.get('cess_rate', 0))) if normalized.get('cess_rate') else None,
-        cess_amount=Decimal(str(normalized.get('cess_amount', 0))) if normalized.get('cess_amount') else None,
-        total_tax=Decimal(str(normalized.get('cgst_amount', 0))) + Decimal(str(normalized.get('sgst_amount', 0))) + Decimal(str(normalized.get('igst_amount', 0))) + Decimal(str(normalized.get('cess_amount', 0))),
-        invoice_value=Decimal(str(normalized.get('invoice_value', 0))) if normalized.get('invoice_value') else None,
-        tax_rate=Decimal(str(normalized.get('tax_rate', 0))) if normalized.get('tax_rate') else None,
-        supply_type=normalized.get('supply_type', 'INTRA'),
-        reverse_charge='Y' if normalized.get('reverse_charge') else 'N',
+        quantity=_safe_decimal(normalized.get('quantity'), Decimal('1')),
+        uqc=normalized.get('uqc', 'NOS'),
+        taxable_value=_safe_decimal(normalized.get('taxable_value')),
+        discount=_safe_decimal(normalized.get('discount')) if normalized.get('discount') else None,
+        cgst_rate=_safe_decimal(normalized.get('cgst_rate')),
+        cgst_amount=cgst,
+        sgst_rate=_safe_decimal(normalized.get('sgst_rate')),
+        sgst_amount=sgst,
+        igst_rate=_safe_decimal(normalized.get('igst_rate')),
+        igst_amount=igst,
+        cess_rate=_safe_decimal(normalized.get('cess_rate')),
+        cess_amount=cess,
+        total_tax=total_tax,
+        invoice_value=_safe_decimal(normalized.get('invoice_value')),
+        tax_rate=_safe_decimal(normalized.get('tax_rate')),
+        supply_type=classification or normalized.get('supply_type', 'INTRA'),
+        reverse_charge='Y' if str(normalized.get('reverse_charge', 'N')).upper() in ('Y', 'YES', 'TRUE', '1') else 'N',
         ecommerce_gstin=normalized.get('ecommerce_gstin', ''),
-        marketplace_name=source_platform,
+        marketplace_name=normalized.get('marketplace_name', source_platform),
         note_type=normalized.get('note_type', ''),
         note_number=normalized.get('note_number', ''),
         note_date=note_date,
         original_invoice_number=normalized.get('original_invoice_number', ''),
-        original_invoice_date=original_invoice_date,
-        nil_rated_flag=classification == 'NIL',
-        exempt_flag=classification == 'EXEMPT',
-        non_gst_flag=classification == 'NONGST',
-        return_flag=normalized.get('return_flag', False),
-        cancellation_flag=normalized.get('cancellation_flag', False),
-        amendment_flag=normalized.get('amendment_flag', False),
+        original_invoice_date=orig_inv_date,
+        nil_rated_flag=(classification == 'NIL'),
+        exempt_flag=(classification == 'EXEMPT'),
+        non_gst_flag=(classification == 'NONGST'),
+        return_flag=bool(normalized.get('return_flag', False)),
+        cancellation_flag=bool(normalized.get('cancellation_flag', False)),
+        amendment_flag=bool(normalized.get('amendment_flag', False)),
         validation_status='VALID',
         classification_status=classification,
         gstr1_table=gstr1_table_map.get(classification, 'unknown'),
-        source_metadata=json.dumps(normalized.get('source_metadata', {}), default=str)
+        source_metadata=json.dumps(normalized.get('source_metadata', {}), default=str),
     )
-
-
-def _update_import_totals(import_history: ImportHistory) -> None:
-    """Update import history with calculated totals from transactions."""
-    from sqlalchemy import func
-    
-    totals = db.session.query(
-        func.sum(Transaction.taxable_value),
-        func.sum(Transaction.cgst_amount),
-        func.sum(Transaction.sgst_amount),
-        func.sum(Transaction.igst_amount),
-        func.sum(Transaction.cess_amount),
-        func.sum(Transaction.invoice_value),
-        func.count(Transaction.id).filter(Transaction.classification_status == 'B2B'),
-        func.count(Transaction.id).filter(Transaction.classification_status == 'B2CS'),
-        func.count(Transaction.id).filter(Transaction.classification_status == 'B2CL'),
-        func.count(Transaction.id).filter(Transaction.classification_status.in_(['CDNR', 'CDNUR'])),
-        func.count(Transaction.id).filter(Transaction.classification_status.in_(['NIL', 'EXEMPT', 'NONGST'])),
-    ).filter(Transaction.import_history_id == import_history.id).first()
-    
-    if totals:
-        import_history.total_taxable_value = totals[0] or 0
-        import_history.total_cgst = totals[1] or 0
-        import_history.total_sgst = totals[2] or 0
-        import_history.total_igst = totals[3] or 0
-        import_history.total_cess = totals[4] or 0
-        import_history.total_invoice_value = totals[5] or 0
-
-
-# Import os at module level
-import os

@@ -130,7 +130,12 @@ def upload():
             try:
                 os.remove(file_path)
             except OSError:
-                pass
+                import gc
+                gc.collect()
+                try:
+                    os.remove(file_path)
+                except OSError as e:
+                    current_app.logger.warning(f"Could not remove temp TCS upload file {file_path}: {e}")
 
     return redirect(url_for('tcs.index'))
 

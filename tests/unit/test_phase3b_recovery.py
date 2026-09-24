@@ -196,29 +196,66 @@ class TestHigh06UploadSecurity:
 
     def test_upload_cleans_up_temp_file_on_every_exit_path(self, authed_client, tmp_path):
         """Temporary upload file is cleanly unlinked on success, error, or invalid content."""
-        client, _, _ = authed_client
+        client, _, profile = authed_client
+        temp_dir = tempfile.gettempdir()
 
-        # Create valid xlsx workbook
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.append(['State Code', 'State Name', 'Taxable Value', 'TCS Amount', 'CGST TCS', 'SGST TCS', 'IGST TCS'])
-        ws.append(['27', 'Maharashtra', 10000, 50, 25, 25, 0])
-        buf = io.BytesIO()
-        wb.save(buf)
-        buf.seek(0)
+        # Clean any stale artifacts before test execution to ensure test isolation
+        for f in os.listdir(temp_dir):
+            if f.startswith('tcs_upload_'):
+                try:
+                    os.remove(os.path.join(temp_dir, f))
+                except OSError:
+                    pass
 
-        # Upload and verify success
+        def make_valid_xlsx():
+            w = openpyxl.Workbook()
+            s = w.active
+            s.append(['State Code', 'State Name', 'Taxable Value', 'TCS Amount', 'CGST TCS', 'SGST TCS', 'IGST TCS'])
+            s.append(['27', 'Maharashtra', 10000, 50, 25, 25, 0])
+            b = io.BytesIO()
+            w.save(b)
+            w.close()
+            b.seek(0)
+            return b
+
+        # 1. Exit Path: Success (valid xlsx workbook)
         res = client.post('/tcs/upload', data={
             'return_period': '082024',
-            'file': (buf, 'valid_tcs.xlsx')
+            'file': (make_valid_xlsx(), 'valid_tcs.xlsx')
         }, content_type='multipart/form-data', follow_redirects=True)
         assert res.status_code == 200
         assert b'TCS report imported successfully' in res.data
 
+        # Verify valid TCS data remains persisted correctly
+        persisted = TCSReconciliation.query.filter_by(profile_id=profile.id, return_period='082024').all()
+        assert len(persisted) == 1
+        assert persisted[0].state_code == '27'
+        assert persisted[0].portal_taxable_value == Decimal('10000')
+
         # Verify no files with prefix 'tcs_upload_' remain in system tempdir
-        temp_dir = tempfile.gettempdir()
         stale_files = [f for f in os.listdir(temp_dir) if f.startswith('tcs_upload_')]
         assert len(stale_files) == 0, f"Stale temp upload files found: {stale_files}"
+
+        # 2. Exit Path: Invalid workbook (magic bytes PK\x03\x04 but invalid xlsx body)
+        corrupt_buf = io.BytesIO(b'PK\x03\x04\x00\x00invalid_corrupt_zip_stream_bytes')
+        res_corrupt = client.post('/tcs/upload', data={
+            'return_period': '082024',
+            'file': (corrupt_buf, 'corrupt.xlsx')
+        }, content_type='multipart/form-data', follow_redirects=True)
+        assert res_corrupt.status_code == 200
+        stale_files = [f for f in os.listdir(temp_dir) if f.startswith('tcs_upload_')]
+        assert len(stale_files) == 0, f"Stale temp files found after corrupt upload: {stale_files}"
+
+        # 3. Exit Path: Parser failure (simulated parser exception)
+        with patch('app.services.tcs_service.TCSReportParser.parse_file', side_effect=RuntimeError("Simulated parser failure")):
+            res_err = client.post('/tcs/upload', data={
+                'return_period': '082024',
+                'file': (make_valid_xlsx(), 'valid_tcs.xlsx')
+            }, content_type='multipart/form-data', follow_redirects=True)
+            assert res_err.status_code == 200
+
+        stale_files = [f for f in os.listdir(temp_dir) if f.startswith('tcs_upload_')]
+        assert len(stale_files) == 0, f"Stale temp files found after parser failure: {stale_files}"
 
 
 # ==============================================================================
@@ -343,12 +380,21 @@ class TestMed01ExceptionDisclosure:
         """When import_tcs_report raises an unexpected exception, the temp file is cleaned
         and the user sees a safe error message without raw details."""
         client, _, _, _, _ = authed_client
+        temp_dir = tempfile.gettempdir()
+        for f in os.listdir(temp_dir):
+            if f.startswith('tcs_upload_'):
+                try:
+                    os.remove(os.path.join(temp_dir, f))
+                except OSError:
+                    pass
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.append(['State Code', 'State Name', 'Taxable Value', 'TCS Amount', 'CGST TCS', 'SGST TCS', 'IGST TCS'])
         ws.append(['27', 'Maharashtra', 10000, 50, 25, 25, 0])
         buf = io.BytesIO()
         wb.save(buf)
+        wb.close()
         buf.seek(0)
 
         with patch('app.routes.tcs.import_tcs_report', side_effect=RuntimeError("Disk failure secret")):
@@ -361,6 +407,5 @@ class TestMed01ExceptionDisclosure:
             assert b'An error occurred while processing the TCS upload' in res.data
 
         # Verify cleanup
-        temp_dir = tempfile.gettempdir()
         stale = [f for f in os.listdir(temp_dir) if f.startswith('tcs_upload_')]
         assert len(stale) == 0, f"Stale temp files found: {stale}"

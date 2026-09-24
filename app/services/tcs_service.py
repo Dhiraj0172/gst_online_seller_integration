@@ -1,8 +1,9 @@
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from decimal import Decimal
 from datetime import datetime
 import openpyxl
 import os
+import io
 import hashlib
 from app.extensions import db
 from app.models import TCSReconciliation, Transaction, ImportHistory, RawImport
@@ -111,26 +112,46 @@ class TCSReportParser:
         return result
 
     @classmethod
-    def parse_file(cls, file_path: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def parse_file(cls, file_path: Union[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
         """Parse TCS report file. Returns (format_type, parsed_rows)."""
-        wb = openpyxl.load_workbook(file_path, data_only=True)
-        ws = wb.active
+        wb = None
+        content = None
+        try:
+            if hasattr(file_path, 'read'):
+                content = file_path
+                wb = openpyxl.load_workbook(content, data_only=True)
+            else:
+                with open(file_path, 'rb') as f:
+                    content = io.BytesIO(f.read())
+                wb = openpyxl.load_workbook(content, data_only=True)
 
-        rows = list(ws.iter_rows(values_only=True))
-        if not rows:
-            return 'unknown', []
+            ws = wb.active
+            rows = list(ws.iter_rows(values_only=True))
+            if not rows:
+                return 'unknown', []
 
-        headers = [str(h) if h else '' for h in rows[0]]
-        format_type = cls.detect_format(headers)
-        col_map = cls.map_headers(headers, format_type)
+            headers = [str(h) if h else '' for h in rows[0]]
+            format_type = cls.detect_format(headers)
+            col_map = cls.map_headers(headers, format_type)
 
-        parsed = []
-        for row in rows[1:]:
-            parsed_row = cls.parse_row(list(row), col_map, format_type)
-            if parsed_row:
-                parsed.append(parsed_row)
+            parsed = []
+            for row in rows[1:]:
+                parsed_row = cls.parse_row(list(row), col_map, format_type)
+                if parsed_row:
+                    parsed.append(parsed_row)
 
-        return format_type, parsed
+            return format_type, parsed
+        finally:
+            if wb is not None:
+                try:
+                    wb.close()
+                except Exception:
+                    pass
+            if content is not None and isinstance(content, io.BytesIO):
+                try:
+                    content.close()
+                except Exception:
+                    pass
 
 
 def import_tcs_report(file_path: str, profile_id: int, return_period: str, user_id: int) -> ImportResult:

@@ -141,7 +141,7 @@ def process_import(
         raw_file_path=file_path
     )
     db.session.add(import_history)
-    db.session.flush()
+    db.session.commit()
     result.import_history_id = import_history.id
     
     try:
@@ -185,12 +185,22 @@ def process_import(
         
         # Process in chunks
         for chunk in read_chunks(file_path):
+            chunk_prepared = []
+            chunk_fps = []
             for raw_row in chunk:
                 row_number = raw_row.pop('_row_number', 0)
                 sheet_name = raw_row.pop('_sheet_name', '')
-                
+                normalized = adapter.normalize(raw_row)
+                fp = build_fingerprint(normalized, profile_id, platform_name)
+                chunk_prepared.append((row_number, sheet_name, raw_row, normalized, fp))
+                if fp not in seen_in_file:
+                    chunk_fps.append(fp)
+
+            existing_by_fp = find_existing_transactions(profile_id, chunk_fps) if chunk_fps else {}
+
+            for row_number, sheet_name, raw_row, normalized, fingerprint in chunk_prepared:
                 result.total_rows += 1
-                
+
                 # Create RawImport record
                 raw_import = RawImport(
                     import_history_id=import_history.id,
@@ -200,25 +210,20 @@ def process_import(
                     status='PENDING'
                 )
                 db.session.add(raw_import)
-                db.session.flush()
-                
+
                 try:
-                    # Normalize using adapter
-                    normalized = adapter.normalize(raw_row)
                     row_errors = list(normalized.get('_errors') or [])
 
                     # Duplicate detection against this file and stored data
-                    fingerprint = build_fingerprint(normalized, profile_id, platform_name)
                     duplicate_reason = None
                     if fingerprint in seen_in_file:
                         duplicate_reason = f'Duplicate of row {seen_in_file[fingerprint]} in this file'
-                    else:
-                        prior_tx = find_existing_transactions(profile_id, [fingerprint]).get(fingerprint)
-                        if prior_tx is not None:
-                            duplicate_reason = (
-                                f'Already imported: transaction #{prior_tx.id} '
-                                f'(import #{prior_tx.import_history_id})'
-                            )
+                    elif fingerprint in existing_by_fp:
+                        prior_tx = existing_by_fp[fingerprint]
+                        duplicate_reason = (
+                            f'Already imported: transaction #{prior_tx.id} '
+                            f'(import #{prior_tx.import_history_id})'
+                        )
                     if duplicate_reason:
                         seen_in_file.setdefault(fingerprint, row_number)
                         duplicate_rows += 1
@@ -235,7 +240,7 @@ def process_import(
                         result.error_rows += 1
                         result.errors.append(f"Row {row_number}: {'; '.join(row_errors)}")
                         continue
-                    
+
                     # Determine supply type (INTRA/INTER)
                     supply_type = determine_supply_type(
                         seller_gstin=seller_gstin,
@@ -246,37 +251,39 @@ def process_import(
                     normalized['supply_type'] = supply_type
                     normalized['seller_gstin'] = seller_gstin
                     normalized['seller_state'] = seller_state
-                    
+
                     # Classify transaction
                     classification = classify_transaction(normalized, profile, return_period)
                     normalized['classification'] = classification
-                    
+
                     # Create Transaction record
                     transaction = _create_transaction_from_normalized(
                         normalized=normalized,
                         import_history_id=import_history.id,
                         profile_id=profile_id,
-                        raw_import_id=raw_import.id,
                         source_platform=platform_name,
                         classification=classification,
-                        return_period=return_period
+                        return_period=return_period,
+                        raw_import=raw_import
                     )
                     transaction.row_fingerprint = fingerprint
-                    
+
                     db.session.add(transaction)
-                    
+
                     # Update RawImport status
                     raw_import.status = 'SUCCESS'
-                    raw_import.transaction_id = transaction.id
-                    
+
                     result.success_rows += 1
-                    
+
                 except Exception as e:
                     raw_import.status = 'ERROR'
                     raw_import.errors = json.dumps([str(e)])
                     result.error_rows += 1
                     result.errors.append(f"Row {row_number}: {str(e)}")
-                    
+
+            # Batch flush at chunk boundary
+            db.session.flush()
+
         # Update import history with final stats
         import_history.total_rows = result.total_rows
         import_history.success_rows = result.success_rows
@@ -286,22 +293,30 @@ def process_import(
         import_history.processing_status = 'COMPLETED' if result.error_rows == 0 else 'PARTIAL'
         import_history.processing_completed_at = datetime.utcnow()
         import_history.processing_duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-        
+
+        # Flush pending objects so _update_import_totals can query Transaction table
+        db.session.flush()
+
         # Calculate totals
         _update_import_totals(import_history)
-        
+
         db.session.commit()
         result.stats['status'] = import_history.processing_status
-        
+
     except Exception as e:
         db.session.rollback()
-        import_history.processing_status = 'FAILED'
-        import_history.processing_completed_at = datetime.utcnow()
-        import_history.error_summary = json.dumps([str(e)])
-        db.session.commit()
+        try:
+            failed_ih = db.session.get(ImportHistory, result.import_history_id)
+            if failed_ih:
+                failed_ih.processing_status = 'FAILED'
+                failed_ih.processing_completed_at = datetime.utcnow()
+                failed_ih.error_summary = json.dumps([str(e)])
+                db.session.commit()
+        except Exception:
+            pass
         result.errors.append(str(e))
         result.stats['status'] = 'FAILED'
-        
+
     return result
 
 
@@ -309,10 +324,11 @@ def _create_transaction_from_normalized(
     normalized: Dict[str, Any],
     import_history_id: int,
     profile_id: int,
-    raw_import_id: int,
-    source_platform: str,
-    classification: str,
-    return_period: str
+    raw_import_id: Optional[int] = None,
+    source_platform: str = '',
+    classification: str = '',
+    return_period: str = '',
+    raw_import: Optional[RawImport] = None,
 ) -> Transaction:
     """Create Transaction model from normalized data."""
     
@@ -364,14 +380,15 @@ def _create_transaction_from_normalized(
         'UNKNOWN': 'unknown'
     }
     
+    extra_kwargs = {'raw_import': raw_import} if raw_import is not None else {'raw_import_id': raw_import_id}
     return Transaction(
         import_history_id=import_history_id,
         profile_id=profile_id,
-        raw_import_id=raw_import_id,
         source_platform=source_platform,
         source_row_id=normalized.get('order_id', ''),
         order_id=normalized.get('order_id', ''),
         invoice_number=normalized.get('invoice_number', ''),
+        **extra_kwargs,
         invoice_date=invoice_date,
         invoice_type=normalized.get('invoice_type', 'regular'),
         customer_name=normalized.get('customer_name', ''),

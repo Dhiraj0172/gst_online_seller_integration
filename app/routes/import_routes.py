@@ -276,7 +276,8 @@ def upload():
                         warnings=json.dumps(row.warnings) if row.warnings else None,
                     )
                     db.session.add(raw_imp)
-                    db.session.flush()
+                    if total_rows % 1000 == 0:
+                        db.session.flush()
                     continue
 
                 seen_in_file.setdefault(fingerprint, row.row_number)
@@ -306,11 +307,12 @@ def upload():
                     warnings=json.dumps(row.warnings) if row.warnings else None
                 )
                 db.session.add(raw_imp)
-                db.session.flush()
 
                 # A rejected (ERROR) row carries no usable data: keep the raw row
                 # and the reason, and do not create a transaction from it.
                 if row.status.value == 'ERROR':
+                    if total_rows % 1000 == 0:
+                        db.session.flush()
                     continue
 
                 # Save normalized Transaction if parsed successfully
@@ -334,7 +336,7 @@ def upload():
                     tx = Transaction(
                         import_history_id=import_rec.id,
                         profile_id=profile.id,
-                        raw_import_id=raw_imp.id,
+                        raw_import=raw_imp,
                         source_platform=platform_name,
                         source_row_id=str(row.row_number),
                         order_id=norm.get('order_id'),
@@ -370,6 +372,9 @@ def upload():
                         row_fingerprint=fingerprint,
                     )
                     db.session.add(tx)
+
+                if total_rows % 1000 == 0:
+                    db.session.flush()
 
             # Update ImportHistory
             counts = {

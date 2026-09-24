@@ -30,7 +30,13 @@ import pytest
 from app.adapters.amazon import AmazonAdapter
 from app.adapters.base import ImportResult, ImportRow, ImportRowStatus
 from app.adapters.canonical import CanonicalTransaction
-from app.adapters.registry import detect_platform, get_adapter
+from app.adapters.registry import (
+    detect_platform,
+    get_adapter,
+    register_adapter,
+    auto_register_adapters,
+    _ADAPTER_REGISTRY,
+)
 from app.extensions import db as _db
 from app.models import GSTProfile, ImportHistory, RawImport, Transaction, User
 from app.services.import_service import process_import
@@ -720,3 +726,74 @@ class TestAmazonPipelinePersistence:
             assert txs_p2[0].invoice_number == 'INV-P2-01'
             assert txs_p1[0].profile_id == p1_id
             assert txs_p2[0].profile_id == p2_id
+
+
+# ==============================================================================
+# 5. REGISTRY DETERMINISM TESTS (Phase 5B Follow-Up)
+# ==============================================================================
+
+class TestAmazonRegistryDeterminism:
+    """Explicit determinism and precedence for Amazon adapter registration."""
+
+    def test_get_adapter_amazon_resolves_to_specialized_module(self):
+        """get_adapter('Amazon') must always resolve to app.adapters.amazon.AmazonAdapter."""
+        adapter = get_adapter('Amazon')
+        assert adapter is not None
+        assert adapter.__class__.__module__ == 'app.adapters.amazon'
+        assert adapter.__class__.__name__ == 'AmazonAdapter'
+
+    def test_generic_adapter_registration_cannot_overwrite_specialized_adapter(self):
+        """Generic all_adapters.AmazonAdapter must never overwrite the specialized adapter."""
+        from app.adapters.all_adapters import AmazonAdapter as GenericAmazonAdapter
+        from app.adapters.amazon import AmazonAdapter as SpecializedAmazonAdapter
+
+        try:
+            # Attempt to register generic legacy adapter
+            register_adapter(GenericAmazonAdapter)
+            resolved = get_adapter('Amazon')
+            assert resolved.__class__.__module__ == 'app.adapters.amazon'
+            assert resolved.__class__ is SpecializedAmazonAdapter
+            assert _ADAPTER_REGISTRY['Amazon'] is SpecializedAmazonAdapter
+        finally:
+            auto_register_adapters()
+
+    def test_registration_order_independence(self):
+        """Precedence ensures specialized adapter wins regardless of registration order."""
+        from app.adapters.all_adapters import AmazonAdapter as GenericAmazonAdapter
+        from app.adapters.amazon import AmazonAdapter as SpecializedAmazonAdapter
+
+        original = dict(_ADAPTER_REGISTRY)
+        try:
+            # Case A: Generic registered first, specialized registered second
+            _ADAPTER_REGISTRY.clear()
+            register_adapter(GenericAmazonAdapter)
+            assert _ADAPTER_REGISTRY['Amazon'] is GenericAmazonAdapter
+            register_adapter(SpecializedAmazonAdapter)
+            assert _ADAPTER_REGISTRY['Amazon'] is SpecializedAmazonAdapter
+            assert get_adapter('Amazon').__class__.__module__ == 'app.adapters.amazon'
+
+            # Case B: Specialized registered first, generic registered second
+            _ADAPTER_REGISTRY.clear()
+            register_adapter(SpecializedAmazonAdapter)
+            assert _ADAPTER_REGISTRY['Amazon'] is SpecializedAmazonAdapter
+            register_adapter(GenericAmazonAdapter)
+            assert _ADAPTER_REGISTRY['Amazon'] is SpecializedAmazonAdapter
+            assert get_adapter('Amazon').__class__.__module__ == 'app.adapters.amazon'
+        finally:
+            _ADAPTER_REGISTRY.clear()
+            _ADAPTER_REGISTRY.update(original)
+            auto_register_adapters()
+
+    def test_auto_register_idempotency_and_all_adapters_instantiate(self):
+        """auto_register_adapters is idempotent and all platforms instantiate properly."""
+        auto_register_adapters()
+        assert get_adapter('Amazon').__class__.__module__ == 'app.adapters.amazon'
+
+        auto_register_adapters()
+        assert get_adapter('Amazon').__class__.__module__ == 'app.adapters.amazon'
+
+        # Verify all registered adapters instantiate and match PLATFORM_NAME
+        for platform_name in list(_ADAPTER_REGISTRY.keys()):
+            adapter = get_adapter(platform_name)
+            assert adapter is not None, f"Failed to instantiate {platform_name}"
+            assert adapter.PLATFORM_NAME == platform_name

@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from flask import render_template, request, session, flash, redirect, url_for, jsonify, send_file, abort
+from flask import render_template, request, session, flash, redirect, url_for, jsonify, send_file, abort, current_app
 from flask_login import login_required, current_user
 from app.models import GSTR1Generation, GSTProfile
 from app.services.gstr1_generator import generate_gstr1
@@ -63,7 +63,8 @@ def run():
         flash('GSTR-1 Excel and JSON generated successfully!', 'success')
     except Exception as e:
         db.session.rollback()
-        flash(f'Error during generation: {str(e)}', 'danger')
+        current_app.logger.exception(f"Error during GSTR-1 generation: {e}")
+        flash('An error occurred during GSTR-1 generation. Please verify your data and try again.', 'danger')
         
     return redirect(url_for('generate.index'))
 

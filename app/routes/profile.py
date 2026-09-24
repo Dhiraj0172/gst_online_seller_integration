@@ -1,4 +1,4 @@
-from flask import render_template, redirect, url_for, flash, request, session
+from flask import render_template, redirect, url_for, flash, request, session, current_app
 from flask_login import login_required, current_user
 from app.models import GSTProfile
 from app.utils.state_codes import get_state_name
@@ -41,7 +41,8 @@ def create():
             return redirect(url_for('profile.list_profiles'))
         except Exception as e:
             db.session.rollback()
-            flash(f'Error creating profile: {str(e)}', 'danger')
+            current_app.logger.exception(f"Error creating profile: {e}")
+            flash('An error occurred while creating the profile. Please check the details and try again.', 'danger')
             
     profiles = GSTProfile.query.filter_by(user_id=current_user.id).all()
     return render_template('profile.html', profiles=profiles, profile=None)
@@ -66,7 +67,8 @@ def edit(id):
             return redirect(url_for('profile.list_profiles'))
         except Exception as e:
             db.session.rollback()
-            flash(f'Error updating profile: {str(e)}', 'danger')
+            current_app.logger.exception(f"Error updating profile {id}: {e}")
+            flash('An error occurred while updating the profile. Please try again.', 'danger')
             
     profiles = GSTProfile.query.filter_by(user_id=current_user.id).all()
     return render_template('profile.html', profiles=profiles, profile=profile)
@@ -83,7 +85,8 @@ def delete(id):
         flash('Profile deleted successfully', 'success')
     except Exception as e:
         db.session.rollback()
-        flash(f'Error deleting profile: {str(e)}', 'danger')
+        current_app.logger.exception(f"Error deleting profile {id}: {e}")
+        flash('An error occurred while deleting the profile. Please try again.', 'danger')
     return redirect(url_for('profile.list_profiles'))
 
 @profile_bp.route('/profiles/<int:id>/select', methods=['POST', 'GET'])

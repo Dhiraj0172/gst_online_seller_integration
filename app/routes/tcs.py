@@ -1,11 +1,16 @@
-from flask import render_template, request, session, flash, redirect, url_for, jsonify, Response, abort
+from flask import render_template, request, session, flash, redirect, url_for, jsonify, Response, abort, current_app
 from flask_login import login_required, current_user
 from app.models import TCSReconciliation, GSTProfile, AuditLog
 from app.extensions import db
 from app.services.tcs_service import import_tcs_report, reconcile_tcs, apply_adjustment, export_reconciliation
+from app.utils.date_utils import validate_return_period
 from . import tcs_bp
 import os
+import uuid
+import tempfile
 from werkzeug.utils import secure_filename
+
+MAX_TCS_FILE_SIZE = 16 * 1024 * 1024  # 16MB limit
 
 
 def get_active_profile():
@@ -54,38 +59,78 @@ def upload():
         flash('Active profile required', 'danger')
         return redirect(url_for('tcs.index'))
 
+    return_period = request.form.get('return_period', '').strip()
+    if not return_period:
+        flash('Return period required', 'danger')
+        return redirect(url_for('tcs.index'))
+
+    is_valid_rp, rp_msg = validate_return_period(return_period)
+    if not is_valid_rp:
+        flash(f'Invalid return period: {rp_msg}', 'danger')
+        return redirect(url_for('tcs.index'))
+
     if 'file' not in request.files:
         flash('No file selected', 'danger')
         return redirect(url_for('tcs.index'))
 
     file = request.files['file']
-    if file.filename == '':
+    if not file or not file.filename or file.filename.strip() == '':
         flash('No file selected', 'danger')
         return redirect(url_for('tcs.index'))
 
-    return_period = request.form.get('return_period')
-    if not return_period:
-        flash('Return period required', 'danger')
+    filename = secure_filename(file.filename)
+    if not filename.lower().endswith('.xlsx'):
+        flash('Invalid file format. Only Excel (.xlsx) files are supported for TCS reports.', 'danger')
         return redirect(url_for('tcs.index'))
 
-    # Save file temporarily
-    filename = secure_filename(file.filename)
-    upload_dir = os.path.join('uploads', 'tcs')
-    os.makedirs(upload_dir, exist_ok=True)
-    file_path = os.path.join(upload_dir, f"{profile.id}_{return_period}_{filename}")
-    file.save(file_path)
+    # Check request content length if provided
+    if request.content_length and request.content_length > MAX_TCS_FILE_SIZE:
+        flash('File size exceeds the 16MB limit.', 'danger')
+        return redirect(url_for('tcs.index'))
 
-    # Import the report
-    result = import_tcs_report(file_path, profile.id, return_period, current_user.id)
+    # Check magic bytes for ZIP/XLSX (PK\x03\x04)
+    header = file.read(4)
+    file.seek(0)
+    if header != b'PK\x03\x04':
+        flash('Invalid file content. The file is not a valid Excel (.xlsx) spreadsheet.', 'danger')
+        return redirect(url_for('tcs.index'))
 
-    if result.errors:
-        for err in result.errors:
-            flash(f'Import error: {err}', 'danger')
-    else:
-        flash(f'TCS report imported successfully. {result.success_rows} rows parsed.', 'success')
-        if result.warnings:
-            for warn in result.warnings:
-                flash(warn, 'warning')
+    # Safe temp file in system tempdir to isolate tenants and prevent traversal
+    temp_dir = tempfile.gettempdir()
+    safe_filename = f"tcs_upload_{profile.id}_{return_period}_{uuid.uuid4().hex}.xlsx"
+    file_path = os.path.join(temp_dir, safe_filename)
+
+    try:
+        bytes_written = 0
+        with open(file_path, 'wb') as f_out:
+            while chunk := file.read(64 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_TCS_FILE_SIZE:
+                    flash('File size exceeds the 16MB limit.', 'danger')
+                    return redirect(url_for('tcs.index'))
+                f_out.write(chunk)
+
+        # Import the report
+        result = import_tcs_report(file_path, profile.id, return_period, current_user.id)
+
+        if result.errors:
+            for err in result.errors:
+                flash(f'Import error: {err}', 'danger')
+        else:
+            flash(f'TCS report imported successfully. {result.success_rows} rows parsed.', 'success')
+            if result.warnings:
+                for warn in result.warnings:
+                    flash(warn, 'warning')
+    except Exception as exc:
+        current_app.logger.exception(f"Error during TCS upload processing: {exc}")
+        flash('An error occurred while processing the TCS upload. Please verify the file and try again.', 'danger')
+    finally:
+        # Guaranteed cleanup on EVERY exit path to prevent stale uploads/artifacts
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
 
     return redirect(url_for('tcs.index'))
 
@@ -98,22 +143,37 @@ def reconcile():
         flash('Active profile required', 'danger')
         return redirect(url_for('tcs.index'))
 
-    return_period = request.form.get('return_period')
+    return_period = request.form.get('return_period', '').strip()
     if not return_period:
         flash('Return period required', 'danger')
         return redirect(url_for('tcs.index'))
 
-    # Run reconciliation
-    result = reconcile_tcs(profile.id, return_period, current_user.id)
+    is_valid_rp, rp_msg = validate_return_period(return_period)
+    if not is_valid_rp:
+        flash(f'Invalid return period: {rp_msg}', 'danger')
+        return redirect(url_for('tcs.index'))
 
-    if result['status'] == 'NO_INTERNAL_DATA':
-        flash('No e-commerce transactions found for this period. Import marketplace data first.', 'warning')
-    elif result['status'] == 'NO_PORTAL_DATA':
-        flash('No portal TCS report imported. Upload a TCS report first.', 'warning')
+    include_undated_val = request.form.get('include_undated')
+    if include_undated_val is not None:
+        include_undated = include_undated_val.lower() in ('true', '1', 'yes', 'on')
     else:
-        flash(f'Reconciliation completed: {result["matched"]} matched, {result["mismatched"]} mismatched, {result["ambiguous"]} ambiguous, {result["missing_in_source"]} missing in source, {result["missing_in_portal"]} missing in portal.', 'success')
-        for warning in result.get('warnings', []):
-            flash(warning, 'warning')
+        include_undated = True
+
+    try:
+        # Run reconciliation
+        result = reconcile_tcs(profile.id, return_period, current_user.id, include_undated=include_undated)
+
+        if result['status'] == 'NO_INTERNAL_DATA':
+            flash('No e-commerce transactions found for this period. Import marketplace data first.', 'warning')
+        elif result['status'] == 'NO_PORTAL_DATA':
+            flash('No portal TCS report imported. Upload a TCS report first.', 'warning')
+        else:
+            flash(f'Reconciliation completed: {result["matched"]} matched, {result["mismatched"]} mismatched, {result["ambiguous"]} ambiguous, {result["missing_in_source"]} missing in source, {result["missing_in_portal"]} missing in portal.', 'success')
+            for warning in result.get('warnings', []):
+                flash(warning, 'warning')
+    except Exception as exc:
+        current_app.logger.exception(f"Error during TCS reconciliation: {exc}")
+        flash('An error occurred during reconciliation. Please verify your data and try again.', 'danger')
 
     return redirect(url_for('tcs.index'))
 

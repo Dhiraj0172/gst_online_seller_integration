@@ -6,12 +6,16 @@ from app.extensions import db
 from datetime import datetime
 
 
-def get_ecom_supplies(profile_id: int, return_period: str) -> List[Dict[str, Any]]:
+def get_ecom_supplies(profile_id: int, return_period: str, include_undated: bool = False) -> List[Dict[str, Any]]:
     """Get e-commerce supplies for a profile and return period.
 
     Returns transactions where ecommerce_gstin is not null,
     filtered by the return period (invoice_date month/year).
+    If include_undated is True, also includes transactions linked
+    to this return period where invoice_date is NULL.
     """
+    from app.models import ImportHistory
+    from sqlalchemy import or_, and_
     period_date = datetime.strptime(return_period, '%m%Y')
     start_date = period_date.replace(day=1)
     if period_date.month == 12:
@@ -19,13 +23,28 @@ def get_ecom_supplies(profile_id: int, return_period: str) -> List[Dict[str, Any
     else:
         end_date = start_date.replace(month=period_date.month + 1)
 
-    transactions = Transaction.query.filter(
+    query = Transaction.query.filter(
         Transaction.profile_id == profile_id,
         Transaction.ecommerce_gstin.isnot(None),
-        Transaction.invoice_date >= start_date,
-        Transaction.invoice_date < end_date,
         Transaction.is_deleted == False
-    ).all()
+    )
+
+    if include_undated:
+        query = query.join(
+            ImportHistory, Transaction.import_history_id == ImportHistory.id
+        ).filter(
+            or_(
+                and_(Transaction.invoice_date >= start_date, Transaction.invoice_date < end_date),
+                and_(ImportHistory.return_period == return_period, Transaction.invoice_date.is_(None))
+            )
+        )
+    else:
+        query = query.filter(
+            Transaction.invoice_date >= start_date,
+            Transaction.invoice_date < end_date
+        )
+
+    transactions = query.all()
 
     result = []
     for t in transactions:
@@ -79,6 +98,8 @@ def aggregate_ecom(transactions: List[Dict[str, Any]], return_period: str, selle
     from app.services.classification_service import determine_supply_type
     from datetime import date as _date, datetime as _dt
 
+    from app.utils.date_utils import parse_date
+
     def _as_date(value):
         if value is None:
             return None
@@ -87,8 +108,14 @@ def aggregate_ecom(transactions: List[Dict[str, Any]], return_period: str, selle
         if isinstance(value, _date):
             return value
         if isinstance(value, str):
-            return _dt.strptime(value.strip()[:10], '%Y-%m-%d').date()
-        return value
+            parsed = parse_date(value)
+            if parsed is not None:
+                return parsed
+            try:
+                return _dt.strptime(value.strip()[:10], '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return None
+        return None
 
     aggregated = {}
     for t in transactions:

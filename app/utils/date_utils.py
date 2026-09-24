@@ -13,15 +13,29 @@ def parse_date(date_str, formats=None) -> date:
     if formats is None:
         formats = [
             '%d-%m-%Y', '%d/%m/%Y', '%Y-%m-%d', '%d-%b-%Y', '%d/%b/%Y',
-            '%d-%m-%y', '%d/%m/%y', '%Y/%m/%d'
+            '%d-%m-%y', '%d/%m/%y', '%Y/%m/%d',
+            '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S',
+            '%d-%m-%Y %H:%M:%S', '%d/%m/%Y %H:%M:%S',
+            '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M',
+            '%d-%m-%Y %H:%M', '%d/%m/%Y %H:%M',
+            '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M',
         ]
         
-    date_str = str(date_str).strip()
+    date_str_clean = str(date_str).strip()
+    if not date_str_clean or date_str_clean.lower() in ('none', 'nan', 'null', 'nat', ''):
+        return None
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt).date()
+            return datetime.strptime(date_str_clean, fmt).date()
         except ValueError:
             pass
+
+    # Fallback for ISO 8601 strings with timezone/microseconds
+    try:
+        iso_str = date_str_clean.replace('Z', '+00:00')
+        return datetime.fromisoformat(iso_str).date()
+    except (ValueError, TypeError):
+        pass
             
     return None
 

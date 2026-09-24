@@ -198,12 +198,17 @@ def import_tcs_report(file_path: str, profile_id: int, return_period: str, user_
 
     except Exception as e:
         db.session.rollback()
-        result.errors.append(f"Import error: {str(e)}")
+        from flask import current_app
+        try:
+            current_app.logger.exception(f"Error importing TCS report: {e}")
+        except Exception:
+            pass
+        result.errors.append("Failed to process TCS report. Please verify the file and try again.")
 
     return result
 
 
-def reconcile_tcs(profile_id: int, return_period: str, user_id: int) -> Dict[str, Any]:
+def reconcile_tcs(profile_id: int, return_period: str, user_id: int, include_undated: bool = False) -> Dict[str, Any]:
     """Reconcile internal e-commerce TCS with portal TCS report.
 
     Matches by state_code. If internal data has multiple ecommerce_gstin
@@ -211,8 +216,10 @@ def reconcile_tcs(profile_id: int, return_period: str, user_id: int) -> Dict[str
 
     Returns reconciliation summary.
     """
-    # Get internal e-com aggregation
-    internal_transactions = get_ecom_supplies(profile_id, return_period)
+    # Get internal e-com aggregation. When include_undated is True, rows
+    # with NULL invoice_date that belong to this return period's import are
+    # fetched and explicitly flagged rather than silently omitted.
+    internal_transactions = get_ecom_supplies(profile_id, return_period, include_undated=include_undated)
     if not internal_transactions:
         return {
             'status': 'NO_INTERNAL_DATA',

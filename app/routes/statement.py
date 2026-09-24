@@ -1,4 +1,4 @@
-from flask import render_template, request, session, jsonify, Response
+from flask import render_template, request, session, jsonify, Response, current_app
 from flask_login import login_required, current_user
 import csv
 import io
@@ -175,7 +175,8 @@ def edit_transaction(id):
         return jsonify({"success": True})
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": True, "message": str(e)}), 400
+        current_app.logger.exception(f"Error editing transaction {id}: {e}")
+        return jsonify({"error": True, "message": "An error occurred while updating the transaction."}), 400
 
 @statement_bp.route('/statement/delete/<int:id>', methods=['POST'])
 @login_required
@@ -200,7 +201,8 @@ def delete_transaction(id):
         return jsonify({"success": True})
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": True, "message": str(e)}), 400
+        current_app.logger.exception(f"Error deleting transaction {id}: {e}")
+        return jsonify({"error": True, "message": "An error occurred while deleting the transaction."}), 400
 
 @statement_bp.route('/statement/validation-errors')
 @login_required

@@ -138,8 +138,9 @@ def upload():
                     ])
                     import_rec.processing_completed_at = datetime.utcnow()
                     db.session.commit()
-                    flash(f'Import rejected: unsupported or unreadable file ({exc}). '
-                          f'Upload an Excel (.xlsx/.xls) or CSV marketplace export.', 'danger')
+                    current_app.logger.exception(f"Unsupported or unreadable file: {exc}")
+                    flash('Import rejected: unsupported or unreadable file. '
+                          'Upload an Excel (.xlsx/.xls) or CSV marketplace export.', 'danger')
                     return redirect(url_for('imports.history'))
 
             if not adapter:
@@ -410,6 +411,7 @@ def upload():
             
         except Exception as e:
             db.session.rollback()
+            current_app.logger.exception(f"Error processing import upload: {e}")
             if wb:
                 try:
                     wb.close()
@@ -432,7 +434,7 @@ def upload():
                     current_app.logger.error(
                         f"Failed to update import record {import_rec_id} to FAILED: {commit_exc}"
                     )
-            flash(f'Error processing upload: {str(e)}', 'danger')
+            flash('An error occurred while processing the uploaded file. Please verify the file and try again.', 'danger')
             return redirect(url_for('imports.import_page'))
             
     flash('Invalid file format. Please upload an Excel (.xlsx/.xls) or CSV file.', 'danger')

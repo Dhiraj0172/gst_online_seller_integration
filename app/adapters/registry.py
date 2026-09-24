@@ -65,7 +65,8 @@ def auto_register_adapters() -> None:
                 for item_name in dir(module):
                     item = getattr(module, item_name)
                     if isinstance(item, type) and issubclass(item, PlatformAdapter) and item is not PlatformAdapter:
-                        register_adapter(item)
+                        if getattr(item, '__module__', None) == module.__name__:
+                            register_adapter(item)
             except ImportError:
                 pass
 

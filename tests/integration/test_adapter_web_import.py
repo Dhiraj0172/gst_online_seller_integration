@@ -197,3 +197,53 @@ class TestRejectedUploads:
             assert [history.processing_status for history in histories] == ['FAILED', 'COMPLETED']
             assert histories[1].total_rows == 168
             assert Transaction.query.filter_by(profile_id=profile_id).count() == 168
+
+
+class TestGSTR1GovtWebWorkflow:
+    """Requirement Step 9: Web import workflow testing actual routes and services end-to-end."""
+
+    def test_gstr1_govt_web_upload_and_generation_workflow(self, seller_client):
+        client = seller_client['client']
+        app = seller_client['app']
+        profile_id = seller_client['profile_id']
+
+        # 1. Upload GSTR-1 sample workbook via HTTP upload endpoint
+        response = _upload(client, 'gstr1_sample.xlsx', 'GSTR1_Govt')
+        assert response.status_code == 200
+
+        with app.app_context():
+            history = ImportHistory.query.filter_by(profile_id=profile_id).one()
+            assert history.processing_status in ('COMPLETED', 'PARTIAL')
+            assert history.platform_name == 'GSTR1_Govt'
+            assert history.total_rows == 25
+            assert history.error_rows == 0
+
+            # 2. Verify transactions persisted and visible
+            transactions = Transaction.query.filter_by(profile_id=profile_id).all()
+            assert len(transactions) == 25
+
+        # 3. View statement route
+        stmt_res = client.get('/statement')
+        assert stmt_res.status_code == 200
+
+        # 4. Generate GSTR-1 via web route
+        gen_res = client.post('/generate/run', data={'return_period': '012025'}, follow_redirects=True)
+        assert gen_res.status_code == 200
+
+        with app.app_context():
+            from app.models import GSTR1Generation
+            generation = GSTR1Generation.query.filter_by(profile_id=profile_id).first()
+            assert generation is not None
+            assert generation.generation_status == 'COMPLETED'
+            assert os.path.exists(generation.excel_file_path)
+            assert os.path.exists(generation.json_file_path)
+            gen_id = generation.id
+
+        # 5. Verify download routes for Excel and JSON
+        excel_dl = client.get(f'/generate/download/excel/{gen_id}')
+        assert excel_dl.status_code == 200
+        assert len(excel_dl.data) > 0
+
+        json_dl = client.get(f'/generate/download/json/{gen_id}')
+        assert json_dl.status_code == 200
+        assert len(json_dl.data) > 0

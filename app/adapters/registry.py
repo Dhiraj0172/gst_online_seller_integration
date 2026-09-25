@@ -10,6 +10,7 @@ _ADAPTER_REGISTRY: Dict[str, type] = {}
 # module take precedence over generic legacy fallbacks (e.g. app.adapters.all_adapters).
 PREFERRED_PLATFORM_MODULES: Dict[str, str] = {
     'Amazon': 'app.adapters.amazon',
+    'GSTR1_Govt': 'app.adapters.gstr1_govt',
 }
 
 def _adapter_precedence(adapter_class: type) -> int:

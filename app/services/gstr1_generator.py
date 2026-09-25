@@ -177,10 +177,12 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
 
     for tx in transactions:
         txval = Decimal(str(tx.taxable_value or 0))
-        total_taxable += txval
-        total_tax += Decimal(str(tx.total_tax or 0))
 
         raw_classification = (getattr(tx, 'classification_status', None) or getattr(tx, 'gstr1_table', None) or tx.supply_type or 'UNKNOWN').upper()
+
+        if raw_classification not in ('HSN', 'HSNB2C', 'DOCS'):
+            total_taxable += txval
+            total_tax += Decimal(str(tx.total_tax or 0))
 
         # ── CRIT-02 FIX: Normalize explicit classification variants ──
         # The classification_service may produce suffixed/amendment variants
@@ -267,10 +269,31 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
 
         elif classification in ('NIL', 'EXEMPT', 'NONGST'):
             nil_category = nil_base_override or classification
-            _add_nil(nil_data, nil_category, txval, is_inter, tx.customer_gstin)
+            meta = {}
+            if getattr(tx, 'source_metadata', None):
+                try:
+                    import json
+                    meta = json.loads(tx.source_metadata)
+                except Exception:
+                    pass
+            sply_ty_override = meta.get('nil_sply_ty') or getattr(tx, 'uqc', None)
+            if sply_ty_override in ("INTRB2B", "INTRAB2B", "INTRB2C", "INTRAB2C"):
+                if meta.get('nil_rated_supplies') is not None and (meta.get('nil_rated_supplies') != '0' or meta.get('exempt_supplies') != '0' or meta.get('non_gst_supplies') != '0'):
+                    nil_data[sply_ty_override]["nil_amt"] += Decimal(str(meta.get('nil_rated_supplies') or 0))
+                    nil_data[sply_ty_override]["expt_amt"] += Decimal(str(meta.get('exempt_supplies') or 0))
+                    nil_data[sply_ty_override]["ngsup_amt"] += Decimal(str(meta.get('non_gst_supplies') or 0))
+                else:
+                    if nil_category == 'NIL':
+                        nil_data[sply_ty_override]["nil_amt"] += txval
+                    elif nil_category == 'EXEMPT':
+                        nil_data[sply_ty_override]["expt_amt"] += txval
+                    elif nil_category == 'NONGST':
+                        nil_data[sply_ty_override]["ngsup_amt"] += txval
+            else:
+                _add_nil(nil_data, nil_category, txval, is_inter, tx.customer_gstin)
 
-        # HSN aggregation (for all non-amendment transactions)
-        if not is_amendment and classification != 'B2CLA':
+        # HSN aggregation (for all non-amendment transactions with valid HSN code)
+        if not is_amendment and classification != 'B2CLA' and getattr(tx, 'hsn_sac', None):
             _add_hsn(hsn_agg, tx, txval, raw_classification)
 
     # Build HSN output based on period rules
@@ -606,8 +629,8 @@ def _add_hsn(hsn_agg, tx, txval, classification):
     """Aggregate HSN data, tracking B2B vs B2C category for period-aware reporting."""
     is_b2b_type = classification in (
         'B2B', 'B2BA', 'CDNR', 'CDNRA', 'EXPORT', 'SEZ', 'SEZ_REGISTERED',
-        'NIL_REGISTERED', 'EXEMPT_REGISTERED', 'NONGST_REGISTERED'
-    ) or (bool(getattr(tx, 'customer_gstin', None) and len(str(tx.customer_gstin)) == 15) and classification not in ('B2CS', 'CDNUR', 'B2CL', 'B2CLA', 'B2CSA'))
+        'NIL_REGISTERED', 'EXEMPT_REGISTERED', 'NONGST_REGISTERED', 'HSN'
+    ) or (bool(getattr(tx, 'customer_gstin', None) and len(str(tx.customer_gstin)) == 15) and classification not in ('B2CS', 'CDNUR', 'B2CL', 'B2CLA', 'B2CSA', 'HSNB2C'))
     category = 'B2B' if is_b2b_type else 'B2C'
 
     hsn_key = (tx.hsn_sac or "", tx.uqc or "OTH", float(tx.tax_rate or 0), category)
@@ -1185,12 +1208,19 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
     return excel_data
 
 
-def generate_gstr1(profile_id: str, return_period: str, options: Optional[Dict[str, Any]] = None) -> GenerationResult:
+def generate_gstr1(
+    profile_id: str,
+    return_period: str,
+    options: Optional[Dict[str, Any]] = None,
+    financial_year: Optional[str] = None,
+) -> GenerationResult:
     """
     Main GSTR-1 generator service.
     Steps: load transactions -> reconcile -> generate Excel -> generate JSON -> validate output -> return
     """
-    options = options or {}
+    options = dict(options or {})
+    if financial_year and 'financial_year' not in options:
+        options['financial_year'] = financial_year
     generation_id = str(uuid.uuid4())
 
     # 1. Load transactions

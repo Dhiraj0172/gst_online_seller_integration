@@ -363,15 +363,23 @@ def process_import(
         # GSTR-1 Table mappings
         gstr1_table_map = {
             'B2B': 'b2b',
+            'B2BA': 'b2ba',
             'B2CS': 'b2cs',
+            'B2CSA': 'b2csa',
             'B2CL': 'b2cl',
+            'B2CLA': 'b2cla',
             'CDNR': 'cdnr',
+            'CDNRA': 'cdnra',
             'CDNUR': 'cdnur',
+            'CDNURA': 'cdnura',
             'NIL': 'nil',
             'EXEMPT': 'nil',
             'NONGST': 'nil',
             'EXPORT': 'exp',
+            'EXPA': 'expa',
             'SEZ': 'exp',
+            'HSN': 'hsn',
+            'HSNB2C': 'hsnb2c',
             'UNKNOWN': 'unknown'
         }
 
@@ -452,24 +460,62 @@ def process_import(
                 continue
 
             # Normalized Transaction persistence
-            if norm and norm.get('invoice_number'):
+            is_agg = bool(
+                norm.get('is_aggregate')
+                or getattr(row, 'is_aggregate', False)
+                or (getattr(row, 'sheet_name', '').lower() in ('b2cs', 'b2csa', 'nil', 'hsn', 'hsnb2c'))
+            )
+            has_doc_number = bool(norm.get('invoice_number') or norm.get('note_number'))
+
+            if norm and (has_doc_number or is_agg):
                 inv_date = parse_date(norm.get('invoice_date'))
                 note_date = parse_date(norm.get('note_date'))
                 orig_inv_date = parse_date(norm.get('original_invoice_date'))
 
                 # Supply classification
                 raw_supply = str(norm.get('supply_type') or '').strip().upper()
-                if raw_supply in ('B2B', 'B2CS', 'B2CL', 'CDNR', 'CDNUR', 'NIL', 'EXEMPT', 'NONGST', 'EXPORT', 'SEZ'):
+                if raw_supply in (
+                    'B2B', 'B2BA', 'B2CS', 'B2CSA', 'B2CL', 'B2CLA',
+                    'CDNR', 'CDNRA', 'CDNUR', 'CDNURA', 'NIL', 'EXEMPT',
+                    'NONGST', 'EXPORT', 'EXPA', 'SEZ', 'HSN', 'HSNB2C'
+                ):
                     supply_type = raw_supply
                 else:
                     classify = classification_fn or classify_transaction
                     supply_type = classify(norm, profile, return_period)
 
+                pos_code = resolve_pos_code(norm.get('place_of_supply'), norm.get('customer_gstin'), seller_state)
+                txval = _safe_decimal(norm.get('taxable_value'))
+                rate = _safe_decimal(norm.get('tax_rate'))
                 cgst = _safe_decimal(norm.get('cgst_amount'))
                 sgst = _safe_decimal(norm.get('sgst_amount'))
                 igst = _safe_decimal(norm.get('igst_amount'))
                 cess = _safe_decimal(norm.get('cess_amount'))
+                cgst_r = _safe_decimal(norm.get('cgst_rate'))
+                sgst_r = _safe_decimal(norm.get('sgst_rate'))
+                igst_r = _safe_decimal(norm.get('igst_rate'))
+
+                if cgst == 0 and sgst == 0 and igst == 0 and rate > 0 and txval > 0:
+                    if pos_code and seller_state and pos_code == seller_state:
+                        half_rate = rate / Decimal('2')
+                        cgst = ((txval * half_rate) / Decimal('100')).quantize(Decimal('0.01'))
+                        sgst = ((txval * half_rate) / Decimal('100')).quantize(Decimal('0.01'))
+                        cgst_r = half_rate
+                        sgst_r = half_rate
+                    else:
+                        igst = ((txval * rate) / Decimal('100')).quantize(Decimal('0.01'))
+                        igst_r = rate
+                elif rate > 0 and cgst_r == 0 and sgst_r == 0 and igst_r == 0:
+                    if pos_code and seller_state and pos_code == seller_state:
+                        cgst_r = rate / Decimal('2')
+                        sgst_r = rate / Decimal('2')
+                    else:
+                        igst_r = rate
+
                 total_tax = cgst + sgst + igst + cess
+                inv_val = _safe_decimal(norm.get('invoice_value'))
+                if inv_val == 0 and txval > 0:
+                    inv_val = txval + total_tax
 
                 tx = Transaction(
                     import_history_id=import_history.id,
@@ -480,34 +526,34 @@ def process_import(
                         norm.get('order_item_id')
                         or norm.get('sub_order_id')
                         or norm.get('order_id')
-                        or row.row_number
+                        or f"{getattr(row, 'sheet_name', 'row')}_{row.row_number}"
                     ),
                     order_id=norm.get('order_id'),
-                    invoice_number=norm.get('invoice_number'),
+                    invoice_number=(None if is_agg else norm.get('invoice_number')),
                     invoice_date=inv_date,
-                    invoice_type=norm.get('invoice_type', 'regular'),
+                    invoice_type=('aggregate' if is_agg else (norm.get('invoice_type') or 'regular')),
                     customer_name=norm.get('customer_name'),
                     customer_gstin=norm.get('customer_gstin'),
-                    place_of_supply=resolve_pos_code(norm.get('place_of_supply'), norm.get('customer_gstin'), seller_state),
+                    place_of_supply=pos_code,
                     seller_gstin=seller_gstin,
                     item_code=norm.get('item_code'),
                     hsn_sac=norm.get('hsn_sac'),
                     description=norm.get('description'),
-                    quantity=_safe_decimal(norm.get('quantity'), Decimal('1')),
+                    quantity=_safe_decimal(norm.get('quantity'), Decimal('0') if is_agg else Decimal('1')),
                     uqc=norm.get('uqc', 'NOS'),
-                    taxable_value=_safe_decimal(norm.get('taxable_value')),
+                    taxable_value=txval,
                     discount=_safe_decimal(norm.get('discount')) if norm.get('discount') else None,
-                    cgst_rate=_safe_decimal(norm.get('cgst_rate')),
+                    cgst_rate=cgst_r,
                     cgst_amount=cgst,
-                    sgst_rate=_safe_decimal(norm.get('sgst_rate')),
+                    sgst_rate=sgst_r,
                     sgst_amount=sgst,
-                    igst_rate=_safe_decimal(norm.get('igst_rate')),
+                    igst_rate=igst_r,
                     igst_amount=igst,
                     cess_rate=_safe_decimal(norm.get('cess_rate')),
                     cess_amount=cess,
                     total_tax=total_tax,
-                    invoice_value=_safe_decimal(norm.get('invoice_value')),
-                    tax_rate=_safe_decimal(norm.get('tax_rate')),
+                    invoice_value=inv_val,
+                    tax_rate=rate,
                     supply_type=supply_type,
                     reverse_charge='Y' if str(norm.get('reverse_charge', 'N')).upper() in ('Y', 'YES', 'TRUE', '1') else 'N',
                     ecommerce_gstin=norm.get('ecommerce_gstin'),
@@ -526,7 +572,10 @@ def process_import(
                     validation_status='VALID',
                     classification_status=supply_type,
                     gstr1_table=gstr1_table_map.get(supply_type, 'unknown'),
-                    source_metadata=json.dumps(norm.get('source_metadata', {}), default=str),
+                    source_metadata=json.dumps(
+                        dict(norm.get('source_metadata', {}), is_aggregate=is_agg, source_sheet=getattr(row, 'sheet_name', '')),
+                        default=str
+                    ),
                     row_fingerprint=fingerprint,
                 )
                 db.session.add(tx)
@@ -621,23 +670,65 @@ def _create_transaction_from_normalized(
 
     gstr1_table_map = {
         'B2B': 'b2b',
+        'B2BA': 'b2ba',
         'B2CS': 'b2cs',
+        'B2CSA': 'b2csa',
         'B2CL': 'b2cl',
+        'B2CLA': 'b2cla',
         'CDNR': 'cdnr',
+        'CDNRA': 'cdnra',
         'CDNUR': 'cdnur',
+        'CDNURA': 'cdnura',
         'NIL': 'nil',
         'EXEMPT': 'nil',
         'NONGST': 'nil',
         'EXPORT': 'exp',
+        'EXPA': 'expa',
         'SEZ': 'exp',
+        'HSN': 'hsn',
+        'HSNB2C': 'hsnb2c',
         'UNKNOWN': 'unknown'
     }
 
+    txval = _safe_decimal(normalized.get('taxable_value'))
+    rate = _safe_decimal(normalized.get('tax_rate'))
     cgst = _safe_decimal(normalized.get('cgst_amount'))
     sgst = _safe_decimal(normalized.get('sgst_amount'))
     igst = _safe_decimal(normalized.get('igst_amount'))
     cess = _safe_decimal(normalized.get('cess_amount'))
+    cgst_r = _safe_decimal(normalized.get('cgst_rate'))
+    sgst_r = _safe_decimal(normalized.get('sgst_rate'))
+    igst_r = _safe_decimal(normalized.get('igst_rate'))
+    pos = str(normalized.get('place_of_supply') or '').strip()
+    seller_st = str(normalized.get('seller_gstin') or '')[:2]
+
+    if cgst == 0 and sgst == 0 and igst == 0 and rate > 0 and txval > 0:
+        if pos and seller_st and pos == seller_st:
+            half_rate = rate / Decimal('2')
+            cgst = ((txval * half_rate) / Decimal('100')).quantize(Decimal('0.01'))
+            sgst = ((txval * half_rate) / Decimal('100')).quantize(Decimal('0.01'))
+            cgst_r = half_rate
+            sgst_r = half_rate
+        else:
+            igst = ((txval * rate) / Decimal('100')).quantize(Decimal('0.01'))
+            igst_r = rate
+    elif rate > 0 and cgst_r == 0 and sgst_r == 0 and igst_r == 0:
+        if pos and seller_st and pos == seller_st:
+            cgst_r = rate / Decimal('2')
+            sgst_r = rate / Decimal('2')
+        else:
+            igst_r = rate
+
     total_tax = cgst + sgst + igst + cess
+    inv_val = _safe_decimal(normalized.get('invoice_value'))
+    if inv_val == 0 and txval > 0:
+        inv_val = txval + total_tax
+
+    is_agg = bool(
+        normalized.get('is_aggregate')
+        or normalized.get('invoice_type') == 'aggregate'
+        or str(normalized.get('source_sheet', '')).lower() in ('b2cs', 'b2csa', 'nil', 'hsn', 'hsnb2c')
+    )
 
     extra_kwargs = {'raw_import': raw_import} if raw_import is not None else {'raw_import_id': raw_import_id}
     return Transaction(
@@ -651,10 +742,10 @@ def _create_transaction_from_normalized(
             or ''
         ),
         order_id=normalized.get('order_id'),
-        invoice_number=normalized.get('invoice_number', ''),
+        invoice_number=(None if is_agg else (normalized.get('invoice_number') or None)),
         **extra_kwargs,
         invoice_date=inv_date,
-        invoice_type=normalized.get('invoice_type', 'regular'),
+        invoice_type=('aggregate' if is_agg else (normalized.get('invoice_type') or 'regular')),
         customer_name=normalized.get('customer_name', ''),
         customer_gstin=normalized.get('customer_gstin', ''),
         place_of_supply=normalized.get('place_of_supply', ''),
@@ -664,19 +755,19 @@ def _create_transaction_from_normalized(
         description=normalized.get('description', ''),
         quantity=_safe_decimal(normalized.get('quantity'), Decimal('1')),
         uqc=normalized.get('uqc', 'NOS'),
-        taxable_value=_safe_decimal(normalized.get('taxable_value')),
+        taxable_value=txval,
         discount=_safe_decimal(normalized.get('discount')) if normalized.get('discount') else None,
-        cgst_rate=_safe_decimal(normalized.get('cgst_rate')),
+        cgst_rate=cgst_r,
         cgst_amount=cgst,
-        sgst_rate=_safe_decimal(normalized.get('sgst_rate')),
+        sgst_rate=sgst_r,
         sgst_amount=sgst,
-        igst_rate=_safe_decimal(normalized.get('igst_rate')),
+        igst_rate=igst_r,
         igst_amount=igst,
         cess_rate=_safe_decimal(normalized.get('cess_rate')),
         cess_amount=cess,
         total_tax=total_tax,
-        invoice_value=_safe_decimal(normalized.get('invoice_value')),
-        tax_rate=_safe_decimal(normalized.get('tax_rate')),
+        invoice_value=inv_val,
+        tax_rate=rate,
         supply_type=classification or normalized.get('supply_type', 'INTRA'),
         reverse_charge='Y' if str(normalized.get('reverse_charge', 'N')).upper() in ('Y', 'YES', 'TRUE', '1') else 'N',
         ecommerce_gstin=normalized.get('ecommerce_gstin', ''),

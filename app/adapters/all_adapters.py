@@ -27,6 +27,7 @@ adapters that fall back to the generic header matching. Their formats are NOT
 invented here; they are reported by ``FORMAT_DOCUMENTED = False``.
 """
 import csv
+import io
 import json
 import os
 import re
@@ -220,6 +221,15 @@ class BaseGenericAdapter(PlatformAdapter):
 
         if isinstance(workbook_or_data, openpyxl.Workbook):
             return list(self._sheets_from_workbook(workbook_or_data)), file_name, [], {}
+
+        if isinstance(workbook_or_data, (bytes, io.BytesIO)):
+            try:
+                stream = io.BytesIO(workbook_or_data) if isinstance(workbook_or_data, bytes) else workbook_or_data
+                workbook = openpyxl.load_workbook(stream, data_only=True)
+                diagnostics = {'source_type': 'excel'}
+                return list(self._sheets_from_workbook(workbook)), file_name, [], diagnostics
+            except Exception as exc:
+                return [], file_name, [f'Unsupported or unreadable file: {exc}'], {}
 
         if isinstance(workbook_or_data, (list, tuple)):
             rows = list(workbook_or_data)
@@ -532,6 +542,8 @@ class BaseGenericAdapter(PlatformAdapter):
             result.detected_gstin = gstins.most_common(1)[0][0]
 
     def _build_import_row(self, raw_data: Dict[str, Any], row_number: int, sheet_name: str) -> ImportRow:
+        raw_data.setdefault('_sheet_name', sheet_name)
+        raw_data.setdefault('_row_number', row_number)
         normalized = self.normalize(raw_data)
         warnings = list(normalized.pop('_warnings', []) or [])
         errors: List[str] = list(normalized.pop('_errors', []) or [])
@@ -772,11 +784,14 @@ class BaseGenericAdapter(PlatformAdapter):
 
         self.post_normalize(raw_row, normalized, values, warnings)
 
+        existing_meta = normalized.get('source_metadata') or {}
         normalized['source_metadata'] = {
             'platform': self.PLATFORM_NAME,
             'marketplace': normalized.get('marketplace_name', ''),
             'columns': [str(key) for key in raw_row.keys() if not str(key).startswith('_')],
         }
+        if isinstance(existing_meta, dict):
+            normalized['source_metadata'].update(existing_meta)
         normalized['_warnings'] = warnings
         return normalized
 
@@ -1081,17 +1096,19 @@ class GSTR1GovtAdapter(BaseGenericAdapter):
                     'b2cs, cdnr, cdnur, exp, nil, hsn, hsnb2c, docs.')
     FORMAT_DOCUMENTED = True
     FILENAME_TOKENS = ('gstr1', 'gstr-1', 'gstr_1')
-    SHEET_NAMES = ('b2b', 'b2ba', 'b2cl', 'b2cs', 'cdnr', 'cdnur', 'exp', 'nil',
-                   'hsn', 'hsnb2c')
+    SHEET_NAMES = ('b2b', 'b2ba', 'b2cl', 'b2cla', 'b2cs', 'b2csa', 'cdnr', 'cdnra',
+                   'cdnur', 'cdnura', 'exp', 'expa', 'nil', 'hsn', 'hsnb2c')
     NON_TRANSACTION_SHEETS = ('docs',)
-    CONSOLIDATED_SHEETS = ('b2cs', 'nil', 'hsn', 'hsnb2c')
-    NOTE_SHEETS = ('cdnr', 'cdnur')
+    CONSOLIDATED_SHEETS = ('b2cs', 'b2csa', 'nil', 'hsn', 'hsnb2c')
+    AMENDMENT_SHEETS = ('b2ba', 'b2cla', 'b2csa', 'cdnra', 'cdnura', 'expa')
+    NOTE_SHEETS = ('cdnr', 'cdnra', 'cdnur', 'cdnura')
     MULTI_SHEET = True
     REQUIRE_ANY_SHEET = True
     HEADER_MAP = {
         'GSTIN/UIN of Recipient': 'customer_gstin',
         'Invoice Number': 'invoice_number',
         'Invoice date': 'invoice_date',
+        'Invoice Date': 'invoice_date',
         'Invoice Value': 'invoice_value',
         'Place Of Supply': 'place_of_supply',
         'Reverse Charge': 'reverse_charge',
@@ -1103,15 +1120,24 @@ class GSTR1GovtAdapter(BaseGenericAdapter):
         'Cess Amount': 'cess_amount',
         'Original Invoice Number': 'original_invoice_number',
         'Original Invoice date': 'original_invoice_date',
-        'Revised Invoice Number': 'revised_invoice_number',
-        'Revised Invoice date': 'revised_invoice_date',
+        'Original Invoice Date': 'original_invoice_date',
+        'Revised Invoice Number': 'invoice_number',
+        'Revised Invoice date': 'invoice_date',
+        'Revised Invoice Date': 'invoice_date',
         'Note/Refund Voucher Number': 'note_number',
         'Note/Refund Voucher date': 'note_date',
+        'Note/Refund Voucher Date': 'note_date',
         'Note/Refund Voucher Value': 'invoice_value',
         'Invoice/Advance Receipt Number': 'original_invoice_number',
         'Invoice/Advance Receipt date': 'original_invoice_date',
+        'Invoice/Advance Receipt Date': 'original_invoice_date',
         'Note Supply Type': 'supply_type',
         'Note Type': 'note_type',
+        'Original Note Number': 'original_invoice_number',
+        'Original Note Date': 'original_invoice_date',
+        'Revised Note Number': 'note_number',
+        'Revised Note Date': 'note_date',
+        'Note Value': 'invoice_value',
         'Export Type': 'export_type',
         'Port Code': 'port_code',
         'Shipping Bill Number': 'shipping_bill_number',

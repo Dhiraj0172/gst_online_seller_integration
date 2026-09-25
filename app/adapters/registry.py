@@ -32,8 +32,16 @@ def register_adapter(adapter_class: type) -> None:
         platform_name = adapter_class.PLATFORM_NAME
         existing = _ADAPTER_REGISTRY.get(platform_name)
         if existing is not None:
-            if _adapter_precedence(adapter_class) <= _adapter_precedence(existing):
+            existing_prec = _adapter_precedence(existing)
+            incoming_prec = _adapter_precedence(adapter_class)
+            if incoming_prec < existing_prec:
                 return
+            if incoming_prec == existing_prec:
+                # When module priority is equal, a more specialized subclass takes
+                # precedence over its base class (e.g. _GenericFilenameAdapter
+                # over BaseGenericAdapter). Otherwise keep existing registration.
+                if not (issubclass(adapter_class, existing) and adapter_class is not existing):
+                    return
         _ADAPTER_REGISTRY[platform_name] = adapter_class
 
 def get_adapter(platform_name: str) -> Optional[PlatformAdapter]:

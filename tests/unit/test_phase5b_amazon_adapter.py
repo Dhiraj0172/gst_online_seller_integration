@@ -788,12 +788,63 @@ class TestAmazonRegistryDeterminism:
         """auto_register_adapters is idempotent and all platforms instantiate properly."""
         auto_register_adapters()
         assert get_adapter('Amazon').__class__.__module__ == 'app.adapters.amazon'
+        assert get_adapter('Generic').__class__.__module__ == 'app.adapters.all_adapters'
+        assert get_adapter('Generic').__class__.__name__ == '_GenericFilenameAdapter'
 
         auto_register_adapters()
         assert get_adapter('Amazon').__class__.__module__ == 'app.adapters.amazon'
+        assert get_adapter('Generic').__class__.__module__ == 'app.adapters.all_adapters'
+        assert get_adapter('Generic').__class__.__name__ == '_GenericFilenameAdapter'
 
         # Verify all registered adapters instantiate and match PLATFORM_NAME
         for platform_name in list(_ADAPTER_REGISTRY.keys()):
             adapter = get_adapter(platform_name)
             assert adapter is not None, f"Failed to instantiate {platform_name}"
             assert adapter.PLATFORM_NAME == platform_name
+
+    def test_get_adapter_generic_resolves_to_generic_filename_adapter(self):
+        """get_adapter('Generic') must resolve to app.adapters.all_adapters._GenericFilenameAdapter."""
+        from app.adapters.all_adapters import _GenericFilenameAdapter
+        adapter = get_adapter('Generic')
+        assert adapter is not None
+        assert adapter.__class__.__module__ == 'app.adapters.all_adapters'
+        assert adapter.__class__.__name__ == '_GenericFilenameAdapter'
+        assert adapter.__class__ is _GenericFilenameAdapter
+
+    def test_base_generic_adapter_cannot_overwrite_generic_filename_adapter(self):
+        """BaseGenericAdapter must never overwrite the more specialized _GenericFilenameAdapter."""
+        from app.adapters.all_adapters import BaseGenericAdapter, _GenericFilenameAdapter
+
+        try:
+            register_adapter(BaseGenericAdapter)
+            resolved = get_adapter('Generic')
+            assert resolved.__class__ is _GenericFilenameAdapter
+            assert _ADAPTER_REGISTRY['Generic'] is _GenericFilenameAdapter
+        finally:
+            auto_register_adapters()
+
+    def test_generic_registration_order_independence(self):
+        """Subclass precedence ensures _GenericFilenameAdapter wins regardless of registration order."""
+        from app.adapters.all_adapters import BaseGenericAdapter, _GenericFilenameAdapter
+
+        original = dict(_ADAPTER_REGISTRY)
+        try:
+            # Case A: BaseGenericAdapter registered first, _GenericFilenameAdapter registered second
+            _ADAPTER_REGISTRY.clear()
+            register_adapter(BaseGenericAdapter)
+            assert _ADAPTER_REGISTRY['Generic'] is BaseGenericAdapter
+            register_adapter(_GenericFilenameAdapter)
+            assert _ADAPTER_REGISTRY['Generic'] is _GenericFilenameAdapter
+            assert get_adapter('Generic').__class__ is _GenericFilenameAdapter
+
+            # Case B: _GenericFilenameAdapter registered first, BaseGenericAdapter registered second
+            _ADAPTER_REGISTRY.clear()
+            register_adapter(_GenericFilenameAdapter)
+            assert _ADAPTER_REGISTRY['Generic'] is _GenericFilenameAdapter
+            register_adapter(BaseGenericAdapter)
+            assert _ADAPTER_REGISTRY['Generic'] is _GenericFilenameAdapter
+            assert get_adapter('Generic').__class__ is _GenericFilenameAdapter
+        finally:
+            _ADAPTER_REGISTRY.clear()
+            _ADAPTER_REGISTRY.update(original)
+            auto_register_adapters()

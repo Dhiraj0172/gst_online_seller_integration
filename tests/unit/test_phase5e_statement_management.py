@@ -667,12 +667,336 @@ def test_statement_all_sections_return_real_data(app, client, statement_env):
     assert res_nil.status_code == 200
     assert any(r['invoice_number'] == 'INV-NIL-001' for r in res_nil.get_json()['data'])
 
-    # 4. HSN
+    # 4. HSN B2B & B2C
     res_hsn = client.get('/statement/hsn-b2b?return_period=082024')
     assert res_hsn.status_code == 200
     assert res_hsn.get_json()['total'] >= 1
+    assert all(r['supply_type'] in ('B2B', 'B2BA', 'HSN') for r in res_hsn.get_json()['data'])
+
+    res_hsn_b2c = client.get('/statement/hsn-b2c?return_period=082024')
+    assert res_hsn_b2c.status_code == 200
+    assert res_hsn_b2c.get_json()['total'] >= 1
+    assert any(r['invoice_number'] == 'INV-B2C-001' for r in res_hsn_b2c.get_json()['data'])
+    assert all(r['supply_type'] in ('B2CS', 'B2CSA', 'B2CL', 'B2CLA', 'HSNB2C') for r in res_hsn_b2c.get_json()['data'])
 
     # 5. ECOM
     res_ecom = client.get('/statement/ecom?return_period=082024')
     assert res_ecom.status_code == 200
     assert any(r['invoice_number'] == 'INV-ECOM-001' for r in res_ecom.get_json()['data'])
+
+
+def test_phase5e21_hsn_b2b_b2c_section_semantics(app, db, client, statement_env):
+    """Phase 5E-2.1: Proves strict HSN section semantics:
+    1. HSN_B2B returns only B2B transactions with valid HSN (excludes B2C).
+    2. HSN_B2C returns only B2C transactions with valid HSN (excludes B2B).
+    3. HSN rows with missing or empty HSN are excluded from both sections.
+    4. HSN sections remain period-scoped (period A does not leak into period B).
+    5. HSN sections remain profile-scoped (user/profile A does not leak into profile B).
+    6. Deleted HSN rows (is_deleted=True) remain excluded.
+    7. CSV exports for HSN_B2B and HSN_B2C reflect the exact same semantics.
+    """
+    with app.app_context():
+        # Setup specific transactions for Profile A1 in Period 082024
+        # 1. B2B with valid HSN
+        tx_b2b_with_hsn = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2B-OK',
+            invoice_date=date(2024, 8, 20),
+            supply_type='B2B',
+            customer_gstin='27ABCDE1234F1Z5',
+            customer_name='Alpha Buyer',
+            taxable_value=Decimal('1500.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('135.00'),
+            sgst_amount=Decimal('135.00'),
+            total_tax=Decimal('270.00'),
+            invoice_value=Decimal('1770.00'),
+            place_of_supply='27',
+            hsn_sac='8471',
+            is_deleted=False,
+        )
+        # 2. B2C with valid HSN
+        tx_b2c_with_hsn = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2C-OK',
+            invoice_date=date(2024, 8, 21),
+            supply_type='B2CS',
+            customer_name='Consumer X',
+            taxable_value=Decimal('800.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('72.00'),
+            sgst_amount=Decimal('72.00'),
+            total_tax=Decimal('144.00'),
+            invoice_value=Decimal('944.00'),
+            place_of_supply='27',
+            hsn_sac='6109',
+            is_deleted=False,
+        )
+        # 3. B2B without HSN (None)
+        tx_b2b_no_hsn = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2B-NOHSN',
+            invoice_date=date(2024, 8, 22),
+            supply_type='B2B',
+            customer_gstin='27ABCDE1234F1Z5',
+            customer_name='Alpha Buyer',
+            taxable_value=Decimal('1200.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('108.00'),
+            sgst_amount=Decimal('108.00'),
+            total_tax=Decimal('216.00'),
+            invoice_value=Decimal('1416.00'),
+            place_of_supply='27',
+            hsn_sac=None,
+            is_deleted=False,
+        )
+        # 4. B2C without HSN (empty string)
+        tx_b2c_no_hsn = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2C-NOHSN',
+            invoice_date=date(2024, 8, 23),
+            supply_type='B2CS',
+            customer_name='Consumer Y',
+            taxable_value=Decimal('600.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('54.00'),
+            sgst_amount=Decimal('54.00'),
+            total_tax=Decimal('108.00'),
+            invoice_value=Decimal('708.00'),
+            place_of_supply='27',
+            hsn_sac='',
+            is_deleted=False,
+        )
+        # 5. Soft-deleted B2B with HSN
+        tx_b2b_deleted = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2B-DEL',
+            invoice_date=date(2024, 8, 24),
+            supply_type='B2B',
+            customer_gstin='27ABCDE1234F1Z5',
+            customer_name='Alpha Buyer',
+            taxable_value=Decimal('900.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('81.00'),
+            sgst_amount=Decimal('81.00'),
+            total_tax=Decimal('162.00'),
+            invoice_value=Decimal('1062.00'),
+            place_of_supply='27',
+            hsn_sac='8471',
+            is_deleted=True,
+        )
+        # 6. Soft-deleted B2C with HSN
+        tx_b2c_deleted = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2C-DEL',
+            invoice_date=date(2024, 8, 24),
+            supply_type='B2CS',
+            customer_name='Consumer Z',
+            taxable_value=Decimal('400.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('36.00'),
+            sgst_amount=Decimal('36.00'),
+            total_tax=Decimal('72.00'),
+            invoice_value=Decimal('472.00'),
+            place_of_supply='27',
+            hsn_sac='6109',
+            is_deleted=True,
+        )
+
+        # Profile A1 in Period 092024 (different period)
+        tx_b2b_p2 = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_09_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2B-P2',
+            invoice_date=date(2024, 9, 5),
+            supply_type='B2B',
+            customer_gstin='27ABCDE1234F1Z5',
+            customer_name='Alpha Buyer',
+            taxable_value=Decimal('2500.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('225.00'),
+            sgst_amount=Decimal('225.00'),
+            total_tax=Decimal('450.00'),
+            invoice_value=Decimal('2950.00'),
+            place_of_supply='27',
+            hsn_sac='8471',
+            is_deleted=False,
+        )
+        tx_b2c_p2 = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_09_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2C-P2',
+            invoice_date=date(2024, 9, 6),
+            supply_type='B2CS',
+            customer_name='Consumer Sept',
+            taxable_value=Decimal('1100.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('99.00'),
+            sgst_amount=Decimal('99.00'),
+            total_tax=Decimal('198.00'),
+            invoice_value=Decimal('1298.00'),
+            place_of_supply='27',
+            hsn_sac='6109',
+            is_deleted=False,
+        )
+
+        # Profile B1 in Period 082024 (different profile / user)
+        tx_b2b_tb = Transaction(
+            profile_id=statement_env['p_b1_id'],
+            import_history_id=statement_env['imp_b_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2B-TB',
+            invoice_date=date(2024, 8, 10),
+            supply_type='B2B',
+            customer_gstin='29AALCS5765L1ZP',
+            customer_name='Tenant B Buyer',
+            taxable_value=Decimal('3500.00'),
+            tax_rate=Decimal('18.00'),
+            igst_amount=Decimal('630.00'),
+            total_tax=Decimal('630.00'),
+            invoice_value=Decimal('4130.00'),
+            place_of_supply='29',
+            hsn_sac='8471',
+            is_deleted=False,
+        )
+        tx_b2c_tb = Transaction(
+            profile_id=statement_env['p_b1_id'],
+            import_history_id=statement_env['imp_b_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-HSN-B2C-TB',
+            invoice_date=date(2024, 8, 11),
+            supply_type='B2CS',
+            customer_name='Tenant B Consumer',
+            taxable_value=Decimal('750.00'),
+            tax_rate=Decimal('18.00'),
+            igst_amount=Decimal('135.00'),
+            total_tax=Decimal('135.00'),
+            invoice_value=Decimal('885.00'),
+            place_of_supply='29',
+            hsn_sac='6109',
+            is_deleted=False,
+        )
+
+        _db.session.add_all([
+            tx_b2b_with_hsn, tx_b2c_with_hsn, tx_b2b_no_hsn, tx_b2c_no_hsn,
+            tx_b2b_deleted, tx_b2c_deleted, tx_b2b_p2, tx_b2c_p2,
+            tx_b2b_tb, tx_b2c_tb
+        ])
+        _db.session.commit()
+
+    # Login as User A
+    client.post('/login', data={'username': statement_env['user_a_username'], 'password': 'SecretA123!'}, follow_redirects=True)
+
+    # ── Test 1: HSN_B2B endpoint returns B2B with HSN and strictly excludes B2C ──
+    res_b2b_hsn = client.get('/statement/hsn-b2b?return_period=082024')
+    assert res_b2b_hsn.status_code == 200
+    b2b_data = res_b2b_hsn.get_json()['data']
+    b2b_invoices = [r['invoice_number'] for r in b2b_data]
+
+    # Must contain B2B with valid HSN
+    assert 'INV-HSN-B2B-OK' in b2b_invoices
+    # Must NOT contain B2C with HSN (Rule 1: HSN_B2B excludes B2C)
+    assert 'INV-HSN-B2C-OK' not in b2b_invoices
+    # Must NOT contain missing HSN rows (Rule 3)
+    assert 'INV-HSN-B2B-NOHSN' not in b2b_invoices
+    assert 'INV-HSN-B2C-NOHSN' not in b2b_invoices
+    # Must NOT contain soft-deleted rows (Rule 6)
+    assert 'INV-HSN-B2B-DEL' not in b2b_invoices
+    assert 'INV-HSN-B2C-DEL' not in b2b_invoices
+    # Must NOT contain other period rows (Rule 4)
+    assert 'INV-HSN-B2B-P2' not in b2b_invoices
+    # Must NOT contain other profile rows (Rule 5)
+    assert 'INV-HSN-B2B-TB' not in b2b_invoices
+    # Verify all returned rows have B2B supply type and non-empty HSN
+    assert all(r['supply_type'] in ('B2B', 'B2BA', 'HSN') for r in b2b_data)
+    assert all(bool(r['hsn_sac'] and r['hsn_sac'].strip()) for r in b2b_data)
+
+    # ── Test 2: HSN_B2C endpoint returns B2C with HSN and strictly excludes B2B ──
+    res_b2c_hsn = client.get('/statement/hsn-b2c?return_period=082024')
+    assert res_b2c_hsn.status_code == 200
+    b2c_data = res_b2c_hsn.get_json()['data']
+    b2c_invoices = [r['invoice_number'] for r in b2c_data]
+
+    # Must contain B2C with valid HSN
+    assert 'INV-HSN-B2C-OK' in b2c_invoices
+    # Must NOT contain B2B with HSN (Rule 2: HSN_B2C excludes B2B)
+    assert 'INV-HSN-B2B-OK' not in b2c_invoices
+    assert 'INV-A-08-001' not in b2c_invoices
+    assert 'INV-A-08-002' not in b2c_invoices
+    # Must NOT contain missing HSN rows (Rule 3)
+    assert 'INV-HSN-B2B-NOHSN' not in b2c_invoices
+    assert 'INV-HSN-B2C-NOHSN' not in b2c_invoices
+    # Must NOT contain soft-deleted rows (Rule 6)
+    assert 'INV-HSN-B2B-DEL' not in b2c_invoices
+    assert 'INV-HSN-B2C-DEL' not in b2c_invoices
+    # Must NOT contain other period rows (Rule 4)
+    assert 'INV-HSN-B2C-P2' not in b2c_invoices
+    # Must NOT contain other profile rows (Rule 5)
+    assert 'INV-HSN-B2C-TB' not in b2c_invoices
+    # Verify all returned rows have B2C supply type and non-empty HSN
+    assert all(r['supply_type'] in ('B2CS', 'B2CSA', 'B2CL', 'B2CLA', 'HSNB2C') for r in b2c_data)
+    assert all(bool(r['hsn_sac'] and r['hsn_sac'].strip()) for r in b2c_data)
+
+    # ── Test 3: CSV Export honors exact HSN_B2B vs HSN_B2C semantics ──
+    csv_b2b = client.get('/statement/export/hsn-b2b?return_period=082024')
+    assert csv_b2b.status_code == 200
+    b2b_text = csv_b2b.data.decode('utf-8')
+    assert 'INV-HSN-B2B-OK' in b2b_text
+    assert 'INV-HSN-B2C-OK' not in b2b_text
+    assert 'INV-HSN-B2B-NOHSN' not in b2b_text
+    assert 'INV-HSN-B2B-DEL' not in b2b_text
+
+    csv_b2c = client.get('/statement/export/hsn-b2c?return_period=082024')
+    assert csv_b2c.status_code == 200
+    b2c_text = csv_b2c.data.decode('utf-8')
+    assert 'INV-HSN-B2C-OK' in b2c_text
+    assert 'INV-HSN-B2B-OK' not in b2c_text
+    assert 'INV-HSN-B2C-NOHSN' not in b2c_text
+    assert 'INV-HSN-B2C-DEL' not in b2c_text
+
+    # ── Test 4: Return Period Isolation for both sections in Period 092024 ──
+    res_b2b_p2 = client.get('/statement/hsn-b2b?return_period=092024')
+    assert res_b2b_p2.status_code == 200
+    p2_b2b_invs = [r['invoice_number'] for r in res_b2b_p2.get_json()['data']]
+    assert 'INV-HSN-B2B-P2' in p2_b2b_invs
+    assert 'INV-HSN-B2B-OK' not in p2_b2b_invs
+    assert 'INV-HSN-B2C-P2' not in p2_b2b_invs
+
+    res_b2c_p2 = client.get('/statement/hsn-b2c?return_period=092024')
+    assert res_b2c_p2.status_code == 200
+    p2_b2c_invs = [r['invoice_number'] for r in res_b2c_p2.get_json()['data']]
+    assert 'INV-HSN-B2C-P2' in p2_b2c_invs
+    assert 'INV-HSN-B2C-OK' not in p2_b2c_invs
+    assert 'INV-HSN-B2B-P2' not in p2_b2c_invs
+
+    # ── Test 5: Profile Isolation (cross-tenant security) ──
+    client.get('/logout', follow_redirects=True)
+    client.post('/login', data={'username': statement_env['user_b_username'], 'password': 'SecretB456!'}, follow_redirects=True)
+
+    res_tb_b2b = client.get('/statement/hsn-b2b?return_period=082024')
+    assert res_tb_b2b.status_code == 200
+    tb_b2b_invs = [r['invoice_number'] for r in res_tb_b2b.get_json()['data']]
+    assert 'INV-HSN-B2B-TB' in tb_b2b_invs
+    assert 'INV-HSN-B2B-OK' not in tb_b2b_invs
+    assert 'INV-HSN-B2C-TB' not in tb_b2b_invs
+
+    res_tb_b2c = client.get('/statement/hsn-b2c?return_period=082024')
+    assert res_tb_b2c.status_code == 200
+    tb_b2c_invs = [r['invoice_number'] for r in res_tb_b2c.get_json()['data']]
+    assert 'INV-HSN-B2C-TB' in tb_b2c_invs
+    assert 'INV-HSN-B2C-OK' not in tb_b2c_invs
+    assert 'INV-HSN-B2B-TB' not in tb_b2c_invs

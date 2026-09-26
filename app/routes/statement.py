@@ -159,9 +159,19 @@ def get_paginated_transactions(tx_type):
     elif tx_type == 'NIL':
         query = query.filter(Transaction.supply_type.in_(['NIL', 'EXEMPT', 'NONGST']))
     elif tx_type in ('HSN', 'HSN_B2B'):
-        query = query.filter(Transaction.hsn_sac.isnot(None), Transaction.hsn_sac != '')
+        query = query.filter(
+            Transaction.hsn_sac.isnot(None),
+            Transaction.hsn_sac != '',
+            func.trim(Transaction.hsn_sac) != '',
+            Transaction.supply_type.in_(['B2B', 'B2BA', 'HSN']),
+        )
     elif tx_type == 'HSN_B2C':
-        query = query.filter(Transaction.hsn_sac.isnot(None), Transaction.hsn_sac != '')
+        query = query.filter(
+            Transaction.hsn_sac.isnot(None),
+            Transaction.hsn_sac != '',
+            func.trim(Transaction.hsn_sac) != '',
+            Transaction.supply_type.in_(['B2CS', 'B2CSA', 'B2CL', 'B2CLA', 'HSNB2C']),
+        )
     elif tx_type == 'ECOM':
         query = query.filter(Transaction.ecommerce_gstin.isnot(None), Transaction.ecommerce_gstin != '')
 
@@ -431,6 +441,7 @@ def export_section(section):
         return Response('', mimetype="text/csv", headers={"Content-disposition": f"attachment; filename={section}.csv"})
 
     sec = section.upper()
+    sec_norm = sec.replace('-', '_')
 
     query = (
         db.session.query(Transaction)
@@ -451,8 +462,20 @@ def export_section(section):
         query = query.filter(Transaction.supply_type.in_(['CDNUR', 'CDNURA']))
     elif sec in ('NIL', 'EXEMPT'):
         query = query.filter(Transaction.supply_type.in_(['NIL', 'EXEMPT', 'NONGST']))
-    elif sec.startswith('HSN'):
-        query = query.filter(Transaction.hsn_sac.isnot(None), Transaction.hsn_sac != '')
+    elif sec_norm in ('HSN_B2C', 'HSNB2C'):
+        query = query.filter(
+            Transaction.hsn_sac.isnot(None),
+            Transaction.hsn_sac != '',
+            func.trim(Transaction.hsn_sac) != '',
+            Transaction.supply_type.in_(['B2CS', 'B2CSA', 'B2CL', 'B2CLA', 'HSNB2C']),
+        )
+    elif sec_norm in ('HSN_B2B', 'HSN') or sec.startswith('HSN'):
+        query = query.filter(
+            Transaction.hsn_sac.isnot(None),
+            Transaction.hsn_sac != '',
+            func.trim(Transaction.hsn_sac) != '',
+            Transaction.supply_type.in_(['B2B', 'B2BA', 'HSN']),
+        )
     elif sec == 'ECOM':
         query = query.filter(Transaction.ecommerce_gstin.isnot(None), Transaction.ecommerce_gstin != '')
 

@@ -4,6 +4,7 @@ from flask import render_template, request, session, flash, redirect, url_for, j
 from flask_login import login_required, current_user
 from app.models import GSTR1Generation, GSTProfile
 from app.services.gstr1_generator import generate_gstr1
+from app.services.reconciliation_service import run_full_reconciliation
 from app.extensions import db
 from . import generate_bp
 
@@ -29,9 +30,17 @@ def get_active_profile():
 def index():
     profile = get_active_profile()
     generations = []
+    recon_report = None
+    return_period = request.args.get('return_period') or session.get('return_period', '012025')
     if profile:
         generations = GSTR1Generation.query.filter_by(profile_id=profile.id).order_by(GSTR1Generation.created_at.desc()).all()
-    return render_template('generate.html', generations=generations)
+        recon_report = run_full_reconciliation(profile.id, return_period)
+    return render_template(
+        'generate.html',
+        generations=generations,
+        recon_report=recon_report,
+        return_period=return_period,
+    )
 
 @generate_bp.route('/generate/run', methods=['POST', 'GET'])
 @login_required
@@ -41,7 +50,27 @@ def run():
         flash('Active profile required', 'danger')
         return redirect(url_for('profile.list_profiles'))
         
-    return_period = request.form.get('return_period') or session.get('return_period', '012025')
+    return_period = request.form.get('return_period') or request.args.get('return_period') or session.get('return_period', '012025')
+    force = request.form.get('force') in ('true', '1') or request.args.get('force') in ('true', '1')
+
+    enforce_gate = request.form.get('enforce_gate') in ('true', '1') or request.args.get('enforce_gate') in ('true', '1')
+
+    # Pre-generation reconciliation gate: block generation if critical reconciliation errors exist when enforce_gate is active
+    recon_report = run_full_reconciliation(profile.id, return_period)
+    if recon_report.is_generation_blocked:
+        if enforce_gate and not force:
+            flash(
+                f"GSTR-1 generation is blocked: {recon_report.critical_failures} critical reconciliation error(s) detected. "
+                "Please review and fix validation errors before generating returns.",
+                "danger",
+            )
+            return redirect(url_for('statement.validation_errors', return_period=return_period))
+        elif not force:
+            flash(
+                f"Note: Generated with {recon_report.critical_failures} reconciliation error(s). "
+                "Pre-filing review recommended.",
+                "warning",
+            )
     try:
         gen_result = generate_gstr1(str(profile.id), return_period)
         
@@ -123,7 +152,12 @@ def download_json(id):
 @generate_bp.route('/generate/validation/<int:id>')
 @login_required
 def validation(id):
-    return render_template('errors.html')
+    profile = get_active_profile()
+    if profile:
+        gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first()
+        if gen and gen.return_period:
+            return redirect(url_for('statement.validation_errors', return_period=gen.return_period))
+    return redirect(url_for('statement.validation_errors'))
 
 @generate_bp.route('/generate/regenerate', methods=['POST'])
 @login_required

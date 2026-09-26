@@ -2,6 +2,35 @@
 {% block title %}Generate GSTR-1 - GST Online Seller{% endblock %}
 {% block content %}
 <h2 class="mb-4">Generate GSTR-1</h2>
+
+{% if recon_report and recon_report.is_generation_blocked %}
+<div class="alert alert-danger d-flex align-items-center mb-4" role="alert">
+    <i class="fas fa-exclamation-triangle fa-2x me-3"></i>
+    <div>
+        <h5 class="alert-heading mb-1">GSTR-1 Generation Blocked</h5>
+        <div>There are <strong>{{ recon_report.critical_failures }}</strong> critical reconciliation error(s) in return period <strong>{{ return_period }}</strong>. Please review and fix validation errors before generating returns.</div>
+        <div class="mt-2">
+            <a href="{{ url_for('statement.validation_errors', return_period=return_period) }}" class="btn btn-sm btn-outline-danger">
+                <i class="fas fa-search me-1"></i>Inspect Validation Errors & Pre-Filing Review
+            </a>
+        </div>
+    </div>
+</div>
+{% elif recon_report and recon_report.status == 'WARNING' %}
+<div class="alert alert-warning d-flex align-items-center mb-4" role="alert">
+    <i class="fas fa-exclamation-circle fa-2x me-3"></i>
+    <div>
+        <h5 class="alert-heading mb-1">Pre-Filing Warnings Detected</h5>
+        <div>There are <strong>{{ recon_report.warnings }}</strong> non-blocking warning(s) in return period <strong>{{ return_period }}</strong>. You may proceed with generation, but review is recommended.</div>
+        <div class="mt-2">
+            <a href="{{ url_for('statement.validation_errors', return_period=return_period) }}" class="btn btn-sm btn-outline-warning">
+                <i class="fas fa-search me-1"></i>Inspect Warnings
+            </a>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="row">
     <div class="col-md-6">
         <div class="card shadow">
@@ -9,19 +38,54 @@
                 <h5 class="card-title">Pre-generation Checklist</h5>
                 <ul class="list-group list-group-flush mb-3">
                     <li class="list-group-item d-flex justify-content-between align-items-center">
-                        Errors resolved
-                        <span class="badge bg-success rounded-pill"><i class="fas fa-check"></i></span>
+                        Validation & Integrity Checks
+                        {% if recon_report and recon_report.is_generation_blocked %}
+                        <span class="badge bg-danger rounded-pill"><i class="fas fa-times me-1"></i>Blocked</span>
+                        {% elif recon_report and recon_report.status == 'WARNING' %}
+                        <span class="badge bg-warning rounded-pill text-dark"><i class="fas fa-exclamation me-1"></i>Warnings</span>
+                        {% else %}
+                        <span class="badge bg-success rounded-pill"><i class="fas fa-check me-1"></i>Passed</span>
+                        {% endif %}
                     </li>
                     <li class="list-group-item d-flex justify-content-between align-items-center">
-                        TCS Reconciled
-                        <span class="badge bg-warning rounded-pill"><i class="fas fa-exclamation"></i></span>
+                        Reconciliation Review
+                        <a href="{{ url_for('statement.validation_errors', return_period=return_period) }}" class="small text-decoration-none">
+                            {% if recon_report and recon_report.is_generation_blocked %}
+                            <span class="text-danger fw-semibold">Review Errors ({{ recon_report.critical_failures }})</span>
+                            {% elif recon_report and recon_report.status == 'WARNING' %}
+                            <span class="text-warning fw-semibold">Review Warnings ({{ recon_report.warnings }})</span>
+                            {% else %}
+                            <span class="text-success fw-semibold">Review Details (All Pass)</span>
+                            {% endif %}
+                        </a>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        Active Return Period
+                        <span class="badge bg-primary rounded-pill">{{ return_period }}</span>
                     </li>
                 </ul>
-                <div class="form-check mb-3">
-                    <input class="form-check-input" type="checkbox" id="includeHsn" checked>
-                    <label class="form-check-label" for="includeHsn">Include HSN details</label>
-                </div>
-                <button class="btn btn-success w-100" id="generateBtn">Generate Return Files</button>
+
+                <form action="{{ url_for('generate.run') }}" method="POST" id="generateForm">
+                    <input type="hidden" name="return_period" value="{{ return_period }}">
+                    <input type="hidden" name="enforce_gate" value="true">
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="includeHsn" name="include_hsn" checked>
+                        <label class="form-check-label" for="includeHsn">Include HSN details</label>
+                    </div>
+                    {% if recon_report and recon_report.is_generation_blocked %}
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="forceBypass" name="force" value="true">
+                        <label class="form-check-label text-danger" for="forceBypass">Force generation despite blocking errors (Bypass gate)</label>
+                    </div>
+                    <button type="submit" class="btn btn-warning w-100" id="generateBtnBlocked">
+                        <i class="fas fa-exclamation-triangle me-1"></i>Generate Return Files (Bypass Gate)
+                    </button>
+                    {% else %}
+                    <button type="submit" class="btn btn-success w-100" id="generateBtn">
+                        <i class="fas fa-file-invoice me-1"></i>Generate Return Files
+                    </button>
+                    {% endif %}
+                </form>
             </div>
         </div>
     </div>
@@ -35,6 +99,44 @@
                 </div>
             </div>
         </div>
+        {% if generations %}
+        <div class="card shadow mt-3">
+            <div class="card-header bg-white">
+                <h6 class="mb-0 fw-bold">Recent Generations</h6>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Period</th>
+                                <th>Date</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for gen in generations[:5] %}
+                            <tr>
+                                <td>{{ gen.return_period }}</td>
+                                <td>{{ gen.created_at.strftime('%d-%m-%Y %H:%M') if gen.created_at else '-' }}</td>
+                                <td>
+                                    <span class="badge {% if gen.generation_status == 'COMPLETED' %}bg-success{% else %}bg-secondary{% endif %}">
+                                        {{ gen.generation_status }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <a href="{{ url_for('generate.download_excel', id=gen.id) }}" class="btn btn-xs btn-outline-primary py-0 px-1" title="Excel"><i class="fas fa-file-excel"></i></a>
+                                    <a href="{{ url_for('generate.download_json', id=gen.id) }}" class="btn btn-xs btn-outline-info py-0 px-1" title="JSON"><i class="fas fa-file-code"></i></a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

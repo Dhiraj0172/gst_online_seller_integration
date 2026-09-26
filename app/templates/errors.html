@@ -1,25 +1,356 @@
 {% extends 'base.html' %}
-{% block title %}Errors - GST Online Seller{% endblock %}
+{% block title %}Validation Errors & Pre-Filing Review - GST Online Seller{% endblock %}
 {% block content %}
-<h2 class="mb-4">Validation Errors</h2>
-<div class="card shadow">
-    <div class="card-body">
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1">Validation Errors & Pre-Filing Review</h2>
+        <div class="text-muted small">
+            Profile: <strong>{{ active_profile.legal_name|default(active_profile.trade_name|default('Active Profile')) }}</strong>
+            <span class="ms-2 badge bg-light text-dark border">{{ active_profile.gstin|default('No GSTIN') }}</span>
+        </div>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge bg-primary fs-6 px-3 py-2" id="activePeriodBadge">
+            <i class="fas fa-calendar-alt me-1"></i>Period: <span>{{ active_return_period }}</span>
+        </span>
+        <div class="input-group input-group-sm" style="width: auto;">
+            <label class="input-group-text bg-white" for="periodSelect"><i class="fas fa-filter me-1"></i>Period</label>
+            <select class="form-select form-select-sm" id="periodSelect" style="width: 130px;" onchange="window.location.href='{{ url_for('statement.validation_errors') }}?return_period=' + this.value">
+                {% for p in available_periods %}
+                <option value="{{ p }}" {% if p == active_return_period %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <a href="{{ url_for('statement.validation_errors', return_period=active_return_period) }}" class="btn btn-sm btn-outline-secondary" title="Refresh Review">
+            <i class="fas fa-sync-alt"></i> Re-run
+        </a>
+    </div>
+</div>
+
+<!-- Overall Status Banner -->
+{% if review.status == 'BLOCKED' %}
+<div class="alert alert-danger d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4 shadow-sm" role="alert">
+    <div class="d-flex align-items-center">
+        <i class="fas fa-ban fa-2x me-3 text-danger"></i>
+        <div>
+            <h5 class="alert-heading mb-1 fw-bold">Pre-Filing Review: Generation Blocked</h5>
+            <div>Found <strong>{{ review.blocking_count }}</strong> blocking issue(s) in return period <strong>{{ active_return_period }}</strong>. GSTR-1 generation is prohibited until critical errors are resolved.</div>
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('statement.index', return_period=active_return_period) }}" class="btn btn-danger btn-sm">
+            <i class="fas fa-table me-1"></i>Edit in Statement
+        </a>
+    </div>
+</div>
+{% elif review.status == 'WARNING' %}
+<div class="alert alert-warning d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4 shadow-sm" role="alert">
+    <div class="d-flex align-items-center">
+        <i class="fas fa-exclamation-triangle fa-2x me-3 text-warning"></i>
+        <div>
+            <h5 class="alert-heading mb-1 fw-bold">Pre-Filing Review: Warnings Detected</h5>
+            <div>Found <strong>{{ review.warning_count }}</strong> non-blocking warning(s) in return period <strong>{{ active_return_period }}</strong> (e.g. missing HSN codes on non-amendments). GSTR-1 generation may proceed.</div>
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('generate.index', return_period=active_return_period) }}" class="btn btn-success btn-sm">
+            <i class="fas fa-arrow-right me-1"></i>Proceed to Generation
+        </a>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-success d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4 shadow-sm" role="alert">
+    <div class="d-flex align-items-center">
+        <i class="fas fa-check-circle fa-2x me-3 text-success"></i>
+        <div>
+            <h5 class="alert-heading mb-1 fw-bold">Pre-Filing Review: Passed Clean</h5>
+            <div>All 10 reconciliation integrity checks passed with 0 blocking errors for period <strong>{{ active_return_period }}</strong>. Ready for GSTR-1 generation.</div>
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('generate.index', return_period=active_return_period) }}" class="btn btn-success btn-sm">
+            <i class="fas fa-arrow-right me-1"></i>Proceed to Generation
+        </a>
+    </div>
+</div>
+{% endif %}
+
+<!-- KPI Metric Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0 border-start {% if review.status == 'BLOCKED' %}border-danger{% elif review.status == 'WARNING' %}border-warning{% else %}border-success{% endif %} border-4 h-100">
+            <div class="card-body p-3">
+                <div class="text-muted small text-uppercase fw-semibold">Review Status</div>
+                <h4 class="mb-0 mt-1 fw-bold {% if review.status == 'BLOCKED' %}text-danger{% elif review.status == 'WARNING' %}text-warning{% else %}text-success{% endif %}">
+                    {{ review.status }}
+                </h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0 border-start border-danger border-4 h-100">
+            <div class="card-body p-3">
+                <div class="text-muted small text-uppercase fw-semibold">Blocking Issues</div>
+                <h4 class="mb-0 mt-1 fw-bold text-danger">{{ review.blocking_count }}</h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0 border-start border-warning border-4 h-100">
+            <div class="card-body p-3">
+                <div class="text-muted small text-uppercase fw-semibold">Warnings (Non-blocking)</div>
+                <h4 class="mb-0 mt-1 fw-bold text-warning">{{ review.warning_count }}</h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0 border-start border-primary border-4 h-100">
+            <div class="card-body p-3">
+                <div class="text-muted small text-uppercase fw-semibold">Reconciliation Checks</div>
+                <h4 class="mb-0 mt-1 fw-bold text-primary">
+                    {{ review.summary.checks_passed }}/{{ review.summary.checks_total }} Passed
+                </h4>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Section 1: Pre-Filing Reconciliation Engine Checks (10 Categories) -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0 fw-bold">
+            <i class="fas fa-balance-scale text-primary me-2"></i>Reconciliation Integrity Checks (Phase 5E-1 Source of Truth)
+        </h5>
+        <span class="badge {% if review.reconciliation and review.reconciliation.status == 'BLOCKED' %}bg-danger{% elif review.reconciliation and review.reconciliation.status == 'WARNING' %}bg-warning text-dark{% else %}bg-success{% endif %}">
+            Reconciliation: {{ review.reconciliation.status if review.reconciliation else 'PASS' }}
+        </span>
+    </div>
+    <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table">
-                <thead>
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
                     <tr>
-                        <th>Invoice No</th>
-                        <th>Field</th>
-                        <th>Error</th>
-                        <th>Severity</th>
-                        <th>Suggested Fix</th>
+                        <th style="width: 28%;">Check Category</th>
+                        <th style="width: 12%;">Outcome</th>
+                        <th style="width: 12%;">Severity</th>
+                        <th style="width: 48%;">Findings & Messages</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr><td colspan="5" class="text-center">No errors found</td></tr>
+                    {% if review.reconciliation and review.reconciliation.checks %}
+                        {% for c in review.reconciliation.checks %}
+                        <tr>
+                            <td class="fw-semibold">
+                                {% if c.check_name == 'import_counts' %}
+                                    <i class="fas fa-file-import text-secondary me-2"></i>Import-Count Consistency
+                                {% elif c.check_name == 'unclassified' %}
+                                    <i class="fas fa-tags text-secondary me-2"></i>Supply Classification
+                                {% elif c.check_name == 'duplicates' %}
+                                    <i class="fas fa-clone text-secondary me-2"></i>Duplicate Detection
+                                {% elif c.check_name == 'tax_totals' %}
+                                    <i class="fas fa-calculator text-secondary me-2"></i>Tax Consistency & Math
+                                {% elif c.check_name == 'b2b_totals' %}
+                                    <i class="fas fa-building text-secondary me-2"></i>B2B Supply Consistency
+                                {% elif c.check_name == 'b2c_totals' %}
+                                    <i class="fas fa-user text-secondary me-2"></i>B2C Supply Consistency
+                                {% elif c.check_name == 'hsn_reconciliation' %}
+                                    <i class="fas fa-barcode text-secondary me-2"></i>HSN Summary Reconciliation
+                                {% elif c.check_name == 'cdnr_totals' %}
+                                    <i class="fas fa-exchange-alt text-secondary me-2"></i>CDN / CDNUR Notes
+                                {% elif c.check_name == 'nil_totals' %}
+                                    <i class="fas fa-percent text-secondary me-2"></i>NIL / Exempt Supplies
+                                {% elif c.check_name == 'state_totals' %}
+                                    <i class="fas fa-map-marker-alt text-secondary me-2"></i>Place of Supply Integrity
+                                {% else %}
+                                    <i class="fas fa-check-circle text-secondary me-2"></i>{{ c.check_name|replace('_', ' ')|title }}
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if c.passed %}
+                                    <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
+                                        <i class="fas fa-check me-1"></i>Passed
+                                    </span>
+                                {% else %}
+                                    <span class="badge {% if c.severity == 'BLOCKING' %}bg-danger-subtle text-danger border border-danger-subtle{% else %}bg-warning-subtle text-warning border border-warning-subtle{% endif %} px-2 py-1">
+                                        <i class="fas {% if c.severity == 'BLOCKING' %}fa-times{% else %}fa-exclamation{% endif %} me-1"></i>Failed
+                                    </span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if c.severity == 'BLOCKING' %}
+                                    <span class="badge bg-danger">BLOCKING</span>
+                                {% elif c.severity == 'WARNING' %}
+                                    <span class="badge bg-warning text-dark">WARNING</span>
+                                {% else %}
+                                    <span class="badge bg-light text-muted border">INFO</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <ul class="list-unstyled mb-0 small">
+                                    {% for msg in c.messages %}
+                                        <li class="{% if not c.passed and c.severity == 'BLOCKING' %}text-danger fw-semibold{% elif not c.passed %}text-warning-emphasis{% else %}text-muted{% endif %}">
+                                            {{ msg }}
+                                        </li>
+                                    {% endfor %}
+                                </ul>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr>
+                            <td colspan="4" class="text-center text-muted py-3">No reconciliation check data available.</td>
+                        </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>
     </div>
 </div>
+
+<!-- Section 2: Granular Validation Errors Table -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-white py-3">
+        <div class="row g-2 align-items-center">
+            <div class="col-md-4">
+                <h5 class="mb-0 fw-bold">
+                    <i class="fas fa-exclamation-circle text-danger me-2"></i>Granular Validation Issues
+                    <span class="badge bg-secondary ms-1" id="issueCountBadge">{{ review.issues|length }}</span>
+                </h5>
+            </div>
+            <div class="col-md-5">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text bg-white"><i class="fas fa-search"></i></span>
+                    <input type="text" class="form-control" id="issueSearchInput" placeholder="Search by invoice, GSTIN, code, error message..." value="{{ search_query }}">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="input-group input-group-sm">
+                    <label class="input-group-text bg-white" for="severityFilterSelect">Severity</label>
+                    <select class="form-select" id="severityFilterSelect">
+                        <option value="ALL" {% if severity_filter == 'ALL' %}selected{% endif %}>All Issues</option>
+                        <option value="BLOCKING" {% if severity_filter == 'BLOCKING' %}selected{% endif %}>Blocking Only</option>
+                        <option value="WARNING" {% if severity_filter == 'WARNING' %}selected{% endif %}>Warnings Only</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0" id="issuesTable">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width: 10%;">Severity</th>
+                        <th style="width: 14%;">Category / Code</th>
+                        <th style="width: 32%;">Error Description</th>
+                        <th style="width: 14%;">Invoice / Document</th>
+                        <th style="width: 12%;">Customer GSTIN</th>
+                        <th style="width: 8%;">Section</th>
+                        <th style="width: 10%;" class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="issuesTableBody">
+                    {% if review.issues %}
+                        {% for issue in review.issues %}
+                        <tr class="issue-row" data-severity="{{ issue.severity }}" data-search="{{ issue.invoice_number|lower }} {{ issue.customer_gstin|lower }} {{ issue.customer_name|lower }} {{ issue.code|lower }} {{ issue.message|lower }} {{ issue.section|lower }}">
+                            <td>
+                                {% if issue.severity == 'BLOCKING' %}
+                                    <span class="badge bg-danger">BLOCKING</span>
+                                {% else %}
+                                    <span class="badge bg-warning text-dark">WARNING</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="fw-semibold small">{{ issue.category }}</div>
+                                <code class="small text-muted">{{ issue.code }}</code>
+                            </td>
+                            <td>
+                                <div>{{ issue.message }}</div>
+                                {% if issue.details and issue.details.validation_error %}
+                                    <small class="text-muted d-block mt-1">Detail: {{ issue.details.validation_error }}</small>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <a href="{{ url_for('statement.index', return_period=active_return_period, search=issue.invoice_number) }}" class="fw-semibold text-decoration-none" title="Filter in Statement">
+                                    {{ issue.invoice_number }}
+                                </a>
+                                {% if issue.invoice_date %}
+                                    <div class="text-muted small">{{ issue.invoice_date }}</div>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if issue.customer_gstin %}
+                                    <span class="font-monospace small">{{ issue.customer_gstin }}</span>
+                                {% else %}
+                                    <span class="text-muted small">—</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <span class="badge bg-light text-dark border">{{ issue.section }}</span>
+                            </td>
+                            <td class="text-end">
+                                <a href="{{ url_for('statement.index', return_period=active_return_period, search=issue.invoice_number) }}" class="btn btn-xs btn-outline-primary py-0 px-2 small" title="Inspect record">
+                                    <i class="fas fa-search me-1"></i>Inspect
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr id="noIssuesRow">
+                            <td colspan="7" class="text-center py-5">
+                                <div class="text-success mb-2">
+                                    <i class="fas fa-check-circle fa-3x"></i>
+                                </div>
+                                <h6 class="fw-bold mb-1">No Validation Errors Found</h6>
+                                <p class="text-muted small mb-0">All active transactions in return period <strong>{{ active_return_period }}</strong> meet GST schema and reconciliation rules.</p>
+                            </td>
+                        </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const searchInput = document.getElementById('issueSearchInput');
+    const severitySelect = document.getElementById('severityFilterSelect');
+    const rows = document.querySelectorAll('.issue-row');
+    const countBadge = document.getElementById('issueCountBadge');
+
+    function filterTable() {
+        const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+        const selectedSeverity = severitySelect ? severitySelect.value : 'ALL';
+        let visibleCount = 0;
+
+        rows.forEach(row => {
+            const rowSeverity = row.getAttribute('data-severity');
+            const rowSearch = row.getAttribute('data-search') || '';
+
+            const matchesSeverity = (selectedSeverity === 'ALL' || rowSeverity === selectedSeverity);
+            const matchesQuery = (!query || rowSearch.includes(query));
+
+            if (matchesSeverity && matchesQuery) {
+                row.style.display = '';
+                visibleCount++;
+            } else {
+                row.style.display = 'none';
+            }
+        });
+
+        if (countBadge) {
+            countBadge.textContent = visibleCount;
+        }
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener('input', filterTable);
+    }
+
+    if (severitySelect) {
+        severitySelect.addEventListener('change', filterTable);
+    }
+});
+</script>
 {% endblock %}

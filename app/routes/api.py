@@ -2,6 +2,8 @@ from flask import jsonify, request, session
 from flask_login import login_required, current_user
 from app.models import GSTProfile, ImportHistory, Transaction
 from app import db
+from app.services.reconciliation_service import run_full_reconciliation
+from app.services.validation_service import get_pre_filing_review, get_validation_issues
 from . import api_bp
 
 def get_active_profile_id():
@@ -90,7 +92,12 @@ def ecom():
 @api_bp.route('/reconciliation')
 @login_required
 def reconciliation():
-    return api_response([])
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="No active GST profile found", status=404)
+    return_period = request.args.get('return_period') or session.get('return_period', '012025')
+    report = run_full_reconciliation(profile_id, return_period)
+    return api_response(report.to_dict())
 
 @api_bp.route('/import-history')
 @login_required
@@ -100,7 +107,23 @@ def import_history():
 @api_bp.route('/validation-errors')
 @login_required
 def validation_errors():
-    return api_response([])
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="No active GST profile found", status=404)
+
+    return_period = request.args.get('return_period') or session.get('return_period', '012025')
+    severity = request.args.get('severity', '').strip().upper() or None
+    search = request.args.get('search', '').strip() or None
+
+    review = get_pre_filing_review(
+        profile_id=profile_id,
+        return_period=return_period,
+        severity=severity,
+        search=search,
+    )
+    if request.args.get('as_list') == 'true' or request.args.get('format') == 'list':
+        return api_response(review['issues'])
+    return api_response(review)
 
 @api_bp.route('/tcs-reconciliation')
 @login_required

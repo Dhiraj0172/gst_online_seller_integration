@@ -6,6 +6,7 @@ from sqlalchemy import func
 
 from app.extensions import db
 from app.models import AuditLog, GSTProfile, ImportHistory, Transaction
+from app.services.validation_service import get_pre_filing_review, get_validation_issues
 from app.utils.csv_utils import sanitize_csv_value
 from . import statement_bp
 
@@ -429,7 +430,66 @@ def bulk_delete_transactions():
 @statement_bp.route('/statement/validation-errors')
 @login_required
 def validation_errors():
-    return render_template('errors.html')
+    profile_id = get_active_profile_id()
+    active_profile = GSTProfile.query.filter_by(id=profile_id, user_id=current_user.id).first() if profile_id else None
+    return_period = get_active_return_period(profile_id)
+
+    available_periods = []
+    if profile_id:
+        rows = (
+            db.session.query(ImportHistory.return_period)
+            .filter_by(profile_id=profile_id)
+            .distinct()
+            .order_by(ImportHistory.return_period.desc())
+            .all()
+        )
+        available_periods = [r[0] for r in rows if r[0]]
+        if return_period and return_period not in available_periods:
+            available_periods.insert(0, return_period)
+
+    severity_filter = request.args.get('severity', '').strip().upper() or None
+    search_query = request.args.get('search', '').strip() or None
+
+    review_data = get_pre_filing_review(
+        profile_id=profile_id,
+        return_period=return_period,
+        severity=severity_filter,
+        search=search_query,
+    ) if profile_id and return_period else {
+        "status": "PASS",
+        "is_generation_blocked": False,
+        "profile_id": profile_id,
+        "return_period": return_period,
+        "blocking_count": 0,
+        "warning_count": 0,
+        "total_issues": 0,
+        "affected_sections": [],
+        "issues": [],
+        "reconciliation": None,
+        "summary": {
+            "status": "PASS",
+            "is_generation_blocked": False,
+            "blocking_count": 0,
+            "warning_count": 0,
+            "checks_passed": 0,
+            "checks_total": 10,
+            "total_issues": 0,
+            "total_transactions": 0,
+        },
+    }
+
+    if request.args.get('format') == 'json' or request.headers.get('Accept') == 'application/json':
+        return jsonify(review_data)
+
+    return render_template(
+        'errors.html',
+        active_profile=active_profile,
+        active_return_period=return_period,
+        available_periods=available_periods,
+        review=review_data,
+        severity_filter=severity_filter or 'ALL',
+        search_query=search_query or '',
+    )
 
 
 @statement_bp.route('/statement/export/<section>')

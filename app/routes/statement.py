@@ -2,6 +2,7 @@ import csv
 import io
 from flask import current_app, jsonify, render_template, request, Response, session
 from flask_login import current_user, login_required
+from sqlalchemy import func
 
 from app.extensions import db
 from app.models import AuditLog, GSTProfile, ImportHistory, Transaction
@@ -86,14 +87,52 @@ def get_active_return_period(profile_id=None):
 @statement_bp.route('/statement')
 @login_required
 def index():
-    return render_template('statement.html')
+    profile_id = get_active_profile_id()
+    active_profile = GSTProfile.query.filter_by(id=profile_id, user_id=current_user.id).first() if profile_id else None
+    return_period = get_active_return_period(profile_id)
+
+    available_periods = []
+    if profile_id:
+        rows = (
+            db.session.query(ImportHistory.return_period)
+            .filter_by(profile_id=profile_id)
+            .distinct()
+            .order_by(ImportHistory.return_period.desc())
+            .all()
+        )
+        available_periods = [r[0] for r in rows if r[0]]
+
+    if return_period and return_period not in available_periods:
+        available_periods.insert(0, return_period)
+
+    if not available_periods:
+        available_periods = ['012025', '022025', '032025', '042025', '052025']
+
+    return render_template(
+        'statement.html',
+        active_profile=active_profile,
+        active_return_period=return_period,
+        available_periods=available_periods,
+    )
 
 
 def get_paginated_transactions(tx_type):
     profile_id = get_active_profile_id()
     return_period = get_active_return_period(profile_id)
     if not profile_id or not return_period:
-        return jsonify({"data": [], "total": 0, "pages": 0, "page": 1})
+        return jsonify({
+            "data": [],
+            "total": 0,
+            "pages": 0,
+            "page": 1,
+            "return_period": return_period,
+            "summary": {
+                "count": 0,
+                "total_taxable": 0.0,
+                "total_tax": 0.0,
+                "total_invoice_value": 0.0,
+            },
+        })
 
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 25, type=int)
@@ -130,8 +169,24 @@ def get_paginated_transactions(tx_type):
         query = query.filter(
             (Transaction.invoice_number.ilike(f'%{search}%')) |
             (Transaction.customer_gstin.ilike(f'%{search}%')) |
-            (Transaction.customer_name.ilike(f'%{search}%'))
+            (Transaction.customer_name.ilike(f'%{search}%')) |
+            (Transaction.place_of_supply.ilike(f'%{search}%')) |
+            (Transaction.hsn_sac.ilike(f'%{search}%'))
         )
+
+    summary_row = query.with_entities(
+        func.count(Transaction.id),
+        func.coalesce(func.sum(Transaction.taxable_value), 0),
+        func.coalesce(func.sum(Transaction.total_tax), 0),
+        func.coalesce(func.sum(Transaction.invoice_value), 0),
+    ).first()
+
+    summary = {
+        "count": int(summary_row[0]) if summary_row else 0,
+        "total_taxable": float(summary_row[1]) if summary_row else 0.0,
+        "total_tax": float(summary_row[2]) if summary_row else 0.0,
+        "total_invoice_value": float(summary_row[3]) if summary_row else 0.0,
+    }
 
     paginated = query.order_by(Transaction.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
 
@@ -148,8 +203,10 @@ def get_paginated_transactions(tx_type):
             "sgst_amount": float(t.sgst_amount) if t.sgst_amount else 0.0,
             "igst_amount": float(t.igst_amount) if t.igst_amount else 0.0,
             "cess_amount": float(t.cess_amount) if t.cess_amount else 0.0,
+            "total_tax": float(t.total_tax) if t.total_tax is not None else float((t.cgst_amount or 0) + (t.sgst_amount or 0) + (t.igst_amount or 0) + (t.cess_amount or 0)),
             "invoice_value": float(t.invoice_value) if t.invoice_value else 0.0,
             "tax_rate": float(t.tax_rate) if t.tax_rate else 0.0,
+            "hsn_sac": t.hsn_sac or '',
             "supply_type": t.supply_type or '',
             "status": "Valid" if not getattr(t, 'validation_errors', None) else "Warning",
         } for t in paginated.items],
@@ -157,6 +214,7 @@ def get_paginated_transactions(tx_type):
         "pages": paginated.pages,
         "page": page,
         "return_period": return_period,
+        "summary": summary,
     })
 
 
@@ -295,6 +353,69 @@ def delete_transaction(id):
         return jsonify({"error": True, "message": "An error occurred while deleting the transaction."}), 400
 
 
+@statement_bp.route('/statement/transaction/<int:id>', methods=['GET'])
+@login_required
+def get_transaction(id):
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return jsonify({"error": True, "message": "Profile required"}), 404
+    t = Transaction.query.filter_by(id=id, profile_id=profile_id, is_deleted=False).first_or_404()
+    return jsonify({
+        "id": t.id,
+        "invoice_number": t.invoice_number,
+        "invoice_date": t.invoice_date.strftime('%Y-%m-%d') if t.invoice_date else '',
+        "customer_gstin": t.customer_gstin or '',
+        "customer_name": t.customer_name or '',
+        "place_of_supply": t.place_of_supply or '',
+        "taxable_value": float(t.taxable_value) if t.taxable_value else 0.0,
+        "tax_rate": float(t.tax_rate) if t.tax_rate else 0.0,
+        "cgst_amount": float(t.cgst_amount) if t.cgst_amount else 0.0,
+        "sgst_amount": float(t.sgst_amount) if t.sgst_amount else 0.0,
+        "igst_amount": float(t.igst_amount) if t.igst_amount else 0.0,
+        "cess_amount": float(t.cess_amount) if t.cess_amount else 0.0,
+        "total_tax": float(t.total_tax) if t.total_tax is not None else float((t.cgst_amount or 0) + (t.sgst_amount or 0) + (t.igst_amount or 0) + (t.cess_amount or 0)),
+        "invoice_value": float(t.invoice_value) if t.invoice_value else 0.0,
+        "supply_type": t.supply_type or '',
+        "hsn_sac": t.hsn_sac or '',
+    })
+
+
+@statement_bp.route('/statement/bulk-delete', methods=['POST'])
+@login_required
+def bulk_delete_transactions():
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return jsonify({"error": True, "message": "Profile required"}), 404
+    req_data = request.get_json(silent=True) or request.form
+    ids = req_data.get('ids', [])
+    reason = req_data.get('reason', 'User bulk-deleted transactions')
+    if not ids or not isinstance(ids, list):
+        return jsonify({"error": True, "message": "No transaction IDs provided"}), 400
+
+    try:
+        txs = Transaction.query.filter(
+            Transaction.id.in_(ids),
+            Transaction.profile_id == profile_id,
+            Transaction.is_deleted == False
+        ).all()
+        for t in txs:
+            t.is_deleted = True
+            audit = AuditLog(
+                user_id=current_user.id,
+                action="DELETE",
+                entity_type="Transaction",
+                entity_id=t.id,
+                reason=reason,
+            )
+            db.session.add(audit)
+        db.session.commit()
+        return jsonify({"success": True, "deleted_count": len(txs)})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception(f"Error bulk deleting transactions: {e}")
+        return jsonify({"error": True, "message": "An error occurred while deleting transactions."}), 400
+
+
 @statement_bp.route('/statement/validation-errors')
 @login_required
 def validation_errors():
@@ -324,8 +445,26 @@ def export_section(section):
         query = query.filter(Transaction.supply_type.in_(['B2B', 'B2BA']))
     elif sec in ('B2C', 'B2CS'):
         query = query.filter(Transaction.supply_type.in_(['B2CS', 'B2CSA', 'B2CL', 'B2CLA']))
-    elif sec in ('CDNR', 'CDNUR'):
-        query = query.filter(Transaction.supply_type.in_(['CDNR', 'CDNRA', 'CDNUR', 'CDNURA']))
+    elif sec in ('CDNR', 'CDNRA'):
+        query = query.filter(Transaction.supply_type.in_(['CDNR', 'CDNRA']))
+    elif sec in ('CDNUR', 'CDNURA'):
+        query = query.filter(Transaction.supply_type.in_(['CDNUR', 'CDNURA']))
+    elif sec in ('NIL', 'EXEMPT'):
+        query = query.filter(Transaction.supply_type.in_(['NIL', 'EXEMPT', 'NONGST']))
+    elif sec.startswith('HSN'):
+        query = query.filter(Transaction.hsn_sac.isnot(None), Transaction.hsn_sac != '')
+    elif sec == 'ECOM':
+        query = query.filter(Transaction.ecommerce_gstin.isnot(None), Transaction.ecommerce_gstin != '')
+
+    search = request.args.get('search', '').strip()
+    if search:
+        query = query.filter(
+            (Transaction.invoice_number.ilike(f'%{search}%')) |
+            (Transaction.customer_gstin.ilike(f'%{search}%')) |
+            (Transaction.customer_name.ilike(f'%{search}%')) |
+            (Transaction.place_of_supply.ilike(f'%{search}%')) |
+            (Transaction.hsn_sac.ilike(f'%{search}%'))
+        )
 
     txs = query.order_by(Transaction.id.asc()).all()
 

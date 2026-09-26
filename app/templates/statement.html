@@ -1,51 +1,795 @@
 {% extends 'base.html' %}
-{% block title %}Manage Data - GST Online Seller{% endblock %}
+{% block title %}Manage Statement Data - GST Online Seller{% endblock %}
 {% block content %}
-<h2 class="mb-4">Manage Statement Data</h2>
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1">Manage Statement Data</h2>
+        <div class="text-muted small">
+            Profile: <strong>{{ active_profile.legal_name|default(active_profile.trade_name|default('Active Profile')) }}</strong>
+            <span class="ms-2 badge bg-light text-dark border">{{ active_profile.gstin|default('No GSTIN') }}</span>
+        </div>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge bg-primary fs-6 px-3 py-2" id="activePeriodBadge">
+            <i class="fas fa-calendar-alt me-1"></i>Period: <span id="activePeriodDisplay">{{ active_return_period }}</span>
+        </span>
+        <div class="input-group input-group-sm" style="width: auto;">
+            <label class="input-group-text bg-white" for="periodSelect"><i class="fas fa-filter me-1"></i>Period</label>
+            <select class="form-select form-select-sm" id="periodSelect" style="width: 130px;">
+                {% for p in available_periods %}
+                <option value="{{ p }}" {% if p == active_return_period %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+            </select>
+            <button class="btn btn-sm btn-outline-primary" id="applyPeriodBtn" type="button">Switch</button>
+        </div>
+    </div>
+</div>
 
-<ul class="nav nav-tabs mb-3" id="statementTabs">
-    <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#b2b">B2B</a></li>
-    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#b2c">B2C</a></li>
-    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#cdnr">CDNR</a></li>
-    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#hsn">HSN</a></li>
-</ul>
+<div id="pageAlertContainer"></div>
 
-<div class="tab-content">
-    <div class="tab-pane fade show active" id="b2b">
-        <div class="card shadow">
-            <div class="card-body">
-                <div class="d-flex justify-content-between mb-3">
-                    <div>
-                        <button class="btn btn-sm btn-outline-secondary">Export</button>
-                        <button class="btn btn-sm btn-outline-danger">Bulk Delete</button>
-                    </div>
-                    <input type="text" class="form-control form-control-sm w-25" placeholder="Search...">
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-bordered table-hover align-middle">
-                        <thead class="table-light">
-                            <tr>
-                                <th><input type="checkbox"></th>
-                                <th>Recipient GSTIN</th>
-                                <th>Invoice No</th>
-                                <th>Date</th>
-                                <th>Value</th>
-                                <th>Status</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <!-- Data rows -->
-                            <tr>
-                                <td colspan="7" class="text-center">No data available</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <!-- Pagination -->
+<!-- Summary KPI Cards -->
+<div class="row g-3 mb-4" id="summaryCardsRow">
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0 border-start border-primary border-4 h-100">
+            <div class="card-body p-3">
+                <div class="text-muted small text-uppercase fw-semibold">Transactions</div>
+                <h4 class="mb-0 mt-1 fw-bold text-primary" id="summaryCount">0</h4>
             </div>
         </div>
     </div>
-    <!-- Other tabs would be similar -->
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0 border-start border-info border-4 h-100">
+            <div class="card-body p-3">
+                <div class="text-muted small text-uppercase fw-semibold">Taxable Value</div>
+                <h4 class="mb-0 mt-1 fw-bold text-info">₹<span id="summaryTaxable">0.00</span></h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0 border-start border-warning border-4 h-100">
+            <div class="card-body p-3">
+                <div class="text-muted small text-uppercase fw-semibold">Total Tax</div>
+                <h4 class="mb-0 mt-1 fw-bold text-warning">₹<span id="summaryTax">0.00</span></h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card shadow-sm border-0 border-start border-success border-4 h-100">
+            <div class="card-body p-3">
+                <div class="text-muted small text-uppercase fw-semibold">Invoice Value</div>
+                <h4 class="mb-0 mt-1 fw-bold text-success">₹<span id="summaryInvoiceValue">0.00</span></h4>
+            </div>
+        </div>
+    </div>
 </div>
+
+<!-- Section Navigation Tabs -->
+<ul class="nav nav-tabs mb-3" id="statementTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active fw-semibold" id="tab-b2b" data-bs-toggle="tab" data-section="b2b" type="button" role="tab">B2B Supplies</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link fw-semibold" id="tab-b2c" data-bs-toggle="tab" data-section="b2c" type="button" role="tab">B2C Retail</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link fw-semibold" id="tab-cdnr" data-bs-toggle="tab" data-section="cdnr" type="button" role="tab">Credit/Debit Reg (CDNR)</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link fw-semibold" id="tab-cdnur" data-bs-toggle="tab" data-section="cdnur" type="button" role="tab">Credit/Debit Unreg (CDNUR)</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link fw-semibold" id="tab-hsn" data-bs-toggle="tab" data-section="hsn-b2b" type="button" role="tab">HSN Summary</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link fw-semibold" id="tab-nil" data-bs-toggle="tab" data-section="nil" type="button" role="tab">NIL / Exempt</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link fw-semibold" id="tab-ecom" data-bs-toggle="tab" data-section="ecom" type="button" role="tab">E-Commerce</button>
+    </li>
+</ul>
+
+<!-- Card Container with Table -->
+<div class="card shadow-sm border-0">
+    <div class="card-body p-3">
+        <!-- Toolbar -->
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+            <div class="d-flex align-items-center gap-2">
+                <a id="exportBtn" class="btn btn-sm btn-outline-secondary" href="/statement/export/b2b?return_period={{ active_return_period }}">
+                    <i class="fas fa-file-csv me-1 text-success"></i>Export CSV
+                </a>
+                <button id="bulkDeleteBtn" class="btn btn-sm btn-outline-danger" disabled>
+                    <i class="fas fa-trash me-1"></i>Bulk Delete (<span id="selectedCount">0</span>)
+                </button>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <div class="d-flex align-items-center">
+                    <label class="form-label mb-0 me-2 small text-muted">Rows:</label>
+                    <select id="perPageSelect" class="form-select form-select-sm" style="width: 75px;">
+                        <option value="25" selected>25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+                <div class="input-group input-group-sm" style="width: 250px;">
+                    <span class="input-group-text bg-white"><i class="fas fa-search text-muted"></i></span>
+                    <input type="text" id="searchInput" class="form-control" placeholder="Search invoice, GSTIN, name...">
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loadingState" class="text-center py-5">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="text-muted small mt-2 mb-0">Loading transactions from database...</p>
+        </div>
+
+        <!-- Error State -->
+        <div id="errorState" class="alert alert-danger d-none my-3" role="alert">
+            <div class="d-flex align-items-center">
+                <i class="fas fa-exclamation-triangle fa-lg me-2"></i>
+                <div id="errorMessage">Failed to load transactions. Please verify profile and return period.</div>
+                <button class="btn btn-sm btn-outline-danger ms-auto" id="retryBtn">Retry</button>
+            </div>
+        </div>
+
+        <!-- Empty State -->
+        <div id="emptyState" class="text-center py-5 d-none">
+            <i class="fas fa-folder-open fa-3x text-muted mb-3 opacity-50"></i>
+            <h5 class="fw-semibold text-secondary">No Transactions Found</h5>
+            <p class="text-muted small mb-0" id="emptyStateDetail">No records exist for the selected section in return period {{ active_return_period }}.</p>
+        </div>
+
+        <!-- Table Container -->
+        <div id="tableContainer" class="table-responsive d-none">
+            <table class="table table-bordered table-hover align-middle mb-0" id="statementTable">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width: 38px;" class="text-center"><input type="checkbox" id="selectAllCheckbox" class="form-check-input"></th>
+                        <th>Invoice / Doc No</th>
+                        <th>Date</th>
+                        <th>Recipient GSTIN / Buyer</th>
+                        <th>POS</th>
+                        <th>HSN/SAC</th>
+                        <th class="text-end">Taxable (₹)</th>
+                        <th class="text-center">Rate</th>
+                        <th class="text-end">Tax (₹)</th>
+                        <th class="text-end">Total Value (₹)</th>
+                        <th class="text-center">Status</th>
+                        <th class="text-center" style="width: 110px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    <!-- Dynamic Rows Rendered by JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination Controls -->
+        <div class="d-flex justify-content-between align-items-center mt-3 flex-wrap gap-2" id="paginationWrapper">
+            <div class="text-muted small" id="paginationInfo">Showing 0 to 0 of 0 entries</div>
+            <nav aria-label="Statement navigation">
+                <ul class="pagination pagination-sm mb-0" id="paginationControls">
+                    <!-- Dynamic Page Buttons -->
+                </ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Transaction Modal -->
+<div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="editModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="editModalLabel"><i class="fas fa-edit me-2 text-primary"></i>Edit Transaction</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="editForm">
+                <div class="modal-body">
+                    <div id="editModalAlert" class="alert alert-danger d-none"></div>
+                    <input type="hidden" id="editTxId">
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">Invoice Number</label>
+                        <input type="text" id="editInvoiceNumber" class="form-control form-control-sm bg-light" readonly>
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small text-muted">Date</label>
+                            <input type="text" id="editInvoiceDate" class="form-control form-control-sm bg-light" readonly>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small text-muted">Supply Type</label>
+                            <input type="text" id="editSupplyType" class="form-control form-control-sm bg-light" readonly>
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Taxable Value (₹)</label>
+                            <input type="number" step="0.01" id="editTaxableValue" class="form-control form-control-sm" required>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small text-muted">Invoice Value (₹)</label>
+                            <input type="number" step="0.01" id="editInvoiceValue" class="form-control form-control-sm">
+                            <small class="text-muted" style="font-size: 0.75rem;">Leave empty to auto-calculate</small>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Reason for Modification <span class="text-danger">*</span></label>
+                        <input type="text" id="editReason" class="form-control form-control-sm" placeholder="e.g., Seller corrected price, rate adjustment" required>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-sm btn-primary" id="saveEditBtn">
+                        <i class="fas fa-save me-1"></i>Save Changes
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-danger">
+                <h5 class="modal-title text-danger" id="deleteModalLabel"><i class="fas fa-exclamation-triangle me-2"></i>Delete Transaction</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="deleteModalAlert" class="alert alert-danger d-none"></div>
+                <input type="hidden" id="deleteTxId">
+                <p>Are you sure you want to soft-delete invoice <strong id="deleteInvoiceNumberText"></strong>?</p>
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold">Reason for Deletion <span class="text-danger">*</span></label>
+                    <input type="text" id="deleteReason" class="form-control form-control-sm" value="User deleted transaction" required>
+                </div>
+                <small class="text-muted"><i class="fas fa-info-circle me-1"></i>The transaction will be soft-deleted and excluded from GSTR-1 generation and statements.</small>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-sm btn-danger" id="confirmDeleteBtn">
+                    <i class="fas fa-trash me-1"></i>Confirm Delete
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk Delete Confirmation Modal -->
+<div class="modal fade" id="bulkDeleteModal" tabindex="-1" aria-labelledby="bulkDeleteModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-danger">
+                <h5 class="modal-title text-danger" id="bulkDeleteModalLabel"><i class="fas fa-trash-alt me-2"></i>Bulk Delete Transactions</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="bulkDeleteModalAlert" class="alert alert-danger d-none"></div>
+                <p>Are you sure you want to soft-delete <strong id="bulkDeleteCountText">0</strong> selected transaction(s)?</p>
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold">Reason for Deletion <span class="text-danger">*</span></label>
+                    <input type="text" id="bulkDeleteReason" class="form-control form-control-sm" value="User bulk-deleted transactions" required>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-sm btn-danger" id="confirmBulkDeleteBtn">
+                    <i class="fas fa-trash me-1"></i>Confirm Bulk Delete
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    'use strict';
+
+    // Application state
+    let currentSection = 'b2b';
+    let currentReturnPeriod = '{{ active_return_period }}';
+    let currentPage = 1;
+    let currentPerPage = 25;
+    let currentSearch = '';
+    let selectedTxIds = new Set();
+    let currentDataMap = new Map();
+    let searchDebounceTimer = null;
+
+    // Utility: Format currency
+    function formatCurrency(val) {
+        if (val === null || val === undefined || isNaN(val)) return '0.00';
+        return parseFloat(val).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    // Utility: Escape HTML
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // Show floating alert message
+    function showAlert(message, type = 'success') {
+        const alertHtml = `
+            <div class="alert alert-${type} alert-dismissible fade show shadow-sm" role="alert">
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        `;
+        $('#pageAlertContainer').html(alertHtml);
+        setTimeout(() => {
+            $('#pageAlertContainer .alert').alert('close');
+        }, 5000);
+    }
+
+    // Update export button URL
+    function updateExportUrl() {
+        const url = `/statement/export/${currentSection}?return_period=${encodeURIComponent(currentReturnPeriod)}&search=${encodeURIComponent(currentSearch)}`;
+        $('#exportBtn').attr('href', url);
+    }
+
+    // Fetch and render data from backend
+    function loadData() {
+        $('#loadingState').removeClass('d-none');
+        $('#errorState').addClass('d-none');
+        $('#emptyState').addClass('d-none');
+        $('#tableContainer').addClass('d-none');
+        $('#paginationWrapper').addClass('d-none');
+
+        updateExportUrl();
+
+        const endpoint = `/statement/${currentSection}`;
+        const params = {
+            return_period: currentReturnPeriod,
+            page: currentPage,
+            per_page: currentPerPage,
+            search: currentSearch
+        };
+
+        $.ajax({
+            url: endpoint,
+            method: 'GET',
+            data: params,
+            dataType: 'json',
+            success: function(res) {
+                $('#loadingState').addClass('d-none');
+                renderResponse(res);
+            },
+            error: function(xhr, status, error) {
+                $('#loadingState').addClass('d-none');
+                $('#errorState').removeClass('d-none');
+                let errText = 'An error occurred while loading statement transactions.';
+                if (xhr.responseJSON && xhr.responseJSON.message) {
+                    errText = xhr.responseJSON.message;
+                }
+                $('#errorMessage').text(errText);
+            }
+        });
+    }
+
+    // Render response onto the page
+    function renderResponse(res) {
+        // Sync return period if reported
+        if (res.return_period) {
+            currentReturnPeriod = res.return_period;
+            $('#activePeriodDisplay').text(currentReturnPeriod);
+            $('#periodSelect').val(currentReturnPeriod);
+            if ($('#period-selector').length) {
+                $('#period-selector').val(currentReturnPeriod);
+            }
+        }
+
+        // Summary cards
+        const summary = res.summary || {};
+        $('#summaryCount').text(summary.count !== undefined ? summary.count : res.total);
+        $('#summaryTaxable').text(formatCurrency(summary.total_taxable));
+        $('#summaryTax').text(formatCurrency(summary.total_tax));
+        $('#summaryInvoiceValue').text(formatCurrency(summary.total_invoice_value));
+
+        currentDataMap.clear();
+        selectedTxIds.clear();
+        updateSelectedState();
+
+        const data = res.data || [];
+        if (data.length === 0) {
+            $('#emptyState').removeClass('d-none');
+            const secName = $('#statementTabs button.active').text();
+            $('#emptyStateDetail').text(`No transactions found for ${secName} in return period ${currentReturnPeriod}.`);
+            $('#paginationInfo').text('Showing 0 to 0 of 0 entries');
+            $('#paginationControls').empty();
+            return;
+        }
+
+        // Populate table rows
+        const $tbody = $('#tableBody');
+        $tbody.empty();
+
+        data.forEach(function(row) {
+            currentDataMap.set(row.id, row);
+
+            const isWarning = row.status === 'Warning';
+            const statusBadge = isWarning
+                ? '<span class="badge bg-warning text-dark"><i class="fas fa-exclamation-circle me-1"></i>Warning</span>'
+                : '<span class="badge bg-success"><i class="fas fa-check-circle me-1"></i>Valid</span>';
+
+            const recipientDisplay = row.customer_gstin
+                ? `<code>${escapeHtml(row.customer_gstin)}</code><br><small class="text-muted">${escapeHtml(row.customer_name)}</small>`
+                : escapeHtml(row.customer_name || '—');
+
+            const taxBreakdown = `
+                <small class="text-muted d-block">
+                    ${row.cgst_amount > 0 ? `C: ${formatCurrency(row.cgst_amount)} ` : ''}
+                    ${row.sgst_amount > 0 ? `S: ${formatCurrency(row.sgst_amount)} ` : ''}
+                    ${row.igst_amount > 0 ? `I: ${formatCurrency(row.igst_amount)} ` : ''}
+                    ${row.cess_amount > 0 ? `Cess: ${formatCurrency(row.cess_amount)}` : ''}
+                </small>
+            `;
+
+            const tr = `
+                <tr id="row-${row.id}">
+                    <td class="text-center">
+                        <input type="checkbox" class="form-check-input row-select" data-id="${row.id}">
+                    </td>
+                    <td><strong>${escapeHtml(row.invoice_number || '—')}</strong></td>
+                    <td>${escapeHtml(row.invoice_date || '—')}</td>
+                    <td>${recipientDisplay}</td>
+                    <td class="text-center"><span class="badge bg-light text-dark border">${escapeHtml(row.place_of_supply || '—')}</span></td>
+                    <td><code>${escapeHtml(row.hsn_sac || '—')}</code></td>
+                    <td class="text-end fw-semibold">${formatCurrency(row.taxable_value)}</td>
+                    <td class="text-center">${row.tax_rate ? row.tax_rate + '%' : '—'}</td>
+                    <td class="text-end">${formatCurrency(row.total_tax)}${taxBreakdown}</td>
+                    <td class="text-end fw-bold text-success">${formatCurrency(row.invoice_value)}</td>
+                    <td class="text-center">${statusBadge}</td>
+                    <td class="text-center">
+                        <button class="btn btn-sm btn-outline-primary py-0 px-2 edit-btn" data-id="${row.id}" title="Edit">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger py-0 px-2 ms-1 delete-btn" data-id="${row.id}" data-invoice="${escapeHtml(row.invoice_number || '')}" title="Delete">
+                            <i class="fas fa-trash-alt"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+            $tbody.append(tr);
+        });
+
+        $('#tableContainer').removeClass('d-none');
+        $('#paginationWrapper').removeClass('d-none');
+
+        // Render pagination controls
+        renderPagination(res.page, res.pages, res.total, currentPerPage);
+    }
+
+    // Render pagination links
+    function renderPagination(page, pages, total, perPage) {
+        const from = Math.min((page - 1) * perPage + 1, total);
+        const to = Math.min(page * perPage, total);
+        $('#paginationInfo').text(`Showing ${from} to ${to} of ${total} entries`);
+
+        const $controls = $('#paginationControls');
+        $controls.empty();
+
+        if (pages <= 1) return;
+
+        // Previous button
+        const prevDisabled = page === 1 ? 'disabled' : '';
+        $controls.append(`
+            <li class="page-item ${prevDisabled}">
+                <button class="page-link" data-page="${page - 1}" aria-label="Previous">&laquo;</button>
+            </li>
+        `);
+
+        // Page numbers (sliding window around current page)
+        let startPage = Math.max(1, page - 2);
+        let endPage = Math.min(pages, page + 2);
+
+        if (startPage > 1) {
+            $controls.append(`<li class="page-item"><button class="page-link" data-page="1">1</button></li>`);
+            if (startPage > 2) {
+                $controls.append(`<li class="page-item disabled"><span class="page-link">...</span></li>`);
+            }
+        }
+
+        for (let p = startPage; p <= endPage; p++) {
+            const active = p === page ? 'active' : '';
+            $controls.append(`
+                <li class="page-item ${active}">
+                    <button class="page-link" data-page="${p}">${p}</button>
+                </li>
+            `);
+        }
+
+        if (endPage < pages) {
+            if (endPage < pages - 1) {
+                $controls.append(`<li class="page-item disabled"><span class="page-link">...</span></li>`);
+            }
+            $controls.append(`<li class="page-item"><button class="page-link" data-page="${pages}">${pages}</button></li>`);
+        }
+
+        // Next button
+        const nextDisabled = page === pages ? 'disabled' : '';
+        $controls.append(`
+            <li class="page-item ${nextDisabled}">
+                <button class="page-link" data-page="${page + 1}" aria-label="Next">&raquo;</button>
+            </li>
+        `);
+    }
+
+    // Checkbox selection management
+    function updateSelectedState() {
+        const count = selectedTxIds.size;
+        $('#selectedCount').text(count);
+        $('#bulkDeleteBtn').prop('disabled', count === 0);
+
+        const totalVisible = $('.row-select').length;
+        $('#selectAllCheckbox').prop('checked', totalVisible > 0 && count === totalVisible);
+    }
+
+    // ──────────────── EVENT BINDINGS ────────────────
+
+    // 1. Tab navigation
+    $('#statementTabs button[data-bs-toggle="tab"]').on('shown.bs.tab', function(e) {
+        currentSection = $(e.target).data('section');
+        currentPage = 1;
+        loadData();
+    });
+
+    // 2. Period Switcher
+    function changePeriod(newPeriod) {
+        if (!newPeriod || newPeriod === currentReturnPeriod) return;
+        currentReturnPeriod = newPeriod;
+        currentPage = 1;
+        $('#activePeriodDisplay').text(currentReturnPeriod);
+        $('#periodSelect').val(currentReturnPeriod);
+        if ($('#period-selector').length) {
+            $('#period-selector').val(currentReturnPeriod);
+        }
+        // Update URL query parameter without full reload
+        const newUrl = `${window.location.pathname}?return_period=${encodeURIComponent(currentReturnPeriod)}`;
+        window.history.pushState({ path: newUrl }, '', newUrl);
+        loadData();
+    }
+
+    $('#applyPeriodBtn').on('click', function() {
+        changePeriod($('#periodSelect').val());
+    });
+
+    $('#periodSelect').on('change', function() {
+        changePeriod($(this).val());
+    });
+
+    // Sync navbar period selector
+    $('#period-selector').on('change', function() {
+        changePeriod($(this).val());
+    });
+
+    // 3. Search with debouncing
+    $('#searchInput').on('input', function() {
+        clearTimeout(searchDebounceTimer);
+        const val = $(this).val().trim();
+        searchDebounceTimer = setTimeout(function() {
+            currentSearch = val;
+            currentPage = 1;
+            loadData();
+        }, 300);
+    });
+
+    $('#searchInput').on('keypress', function(e) {
+        if (e.which === 13) {
+            clearTimeout(searchDebounceTimer);
+            currentSearch = $(this).val().trim();
+            currentPage = 1;
+            loadData();
+        }
+    });
+
+    // 4. Per-page selector
+    $('#perPageSelect').on('change', function() {
+        currentPerPage = parseInt($(this).val(), 10) || 25;
+        currentPage = 1;
+        loadData();
+    });
+
+    // 5. Pagination clicks
+    $('#paginationControls').on('click', '.page-link', function(e) {
+        e.preventDefault();
+        const p = $(this).data('page');
+        if (p && p !== currentPage) {
+            currentPage = p;
+            loadData();
+        }
+    });
+
+    // 6. Checkbox selection
+    $('#selectAllCheckbox').on('change', function() {
+        const checked = $(this).is(':checked');
+        $('.row-select').prop('checked', checked);
+        if (checked) {
+            $('.row-select').each(function() {
+                selectedTxIds.add($(this).data('id'));
+            });
+        } else {
+            selectedTxIds.clear();
+        }
+        updateSelectedState();
+    });
+
+    $('#tableBody').on('change', '.row-select', function() {
+        const id = $(this).data('id');
+        if ($(this).is(':checked')) {
+            selectedTxIds.add(id);
+        } else {
+            selectedTxIds.delete(id);
+        }
+        updateSelectedState();
+    });
+
+    // 7. Retry on error
+    $('#retryBtn').on('click', function() {
+        loadData();
+    });
+
+    // 8. Edit Transaction Modal Flow
+    const editModal = new bootstrap.Modal(document.getElementById('editModal'));
+
+    $('#tableBody').on('click', '.edit-btn', function() {
+        const id = $(this).data('id');
+        $('#editModalAlert').addClass('d-none');
+        $('#editTxId').val(id);
+
+        // Fetch fresh row details from backend
+        $.ajax({
+            url: `/statement/transaction/${id}`,
+            method: 'GET',
+            dataType: 'json',
+            success: function(tx) {
+                $('#editInvoiceNumber').val(tx.invoice_number || '—');
+                $('#editInvoiceDate').val(tx.invoice_date || '—');
+                $('#editSupplyType').val(tx.supply_type || '—');
+                $('#editTaxableValue').val(tx.taxable_value);
+                $('#editInvoiceValue').val(tx.invoice_value);
+                $('#editReason').val('');
+                editModal.show();
+            },
+            error: function(xhr) {
+                showAlert('Failed to fetch transaction details: ' + (xhr.responseJSON?.message || 'Access denied'), 'danger');
+            }
+        });
+    });
+
+    $('#editForm').on('submit', function(e) {
+        e.preventDefault();
+        const id = $('#editTxId').val();
+        const taxableVal = parseFloat($('#editTaxableValue').val());
+        const invVal = $('#editInvoiceValue').val() ? parseFloat($('#editInvoiceValue').val()) : null;
+        const reason = $('#editReason').val().trim();
+
+        if (isNaN(taxableVal)) {
+            $('#editModalAlert').removeClass('d-none').text('Valid taxable value is required.');
+            return;
+        }
+        if (!reason) {
+            $('#editModalAlert').removeClass('d-none').text('Reason for modification is required.');
+            return;
+        }
+
+        $('#saveEditBtn').prop('disabled', true).html('<i class="fas fa-spinner fa-spin me-1"></i>Saving...');
+
+        const payload = { taxable_value: taxableVal, reason: reason };
+        if (invVal !== null && !isNaN(invVal)) {
+            payload.invoice_value = invVal;
+        }
+
+        $.ajax({
+            url: `/statement/edit/${id}`,
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(payload),
+            dataType: 'json',
+            success: function(res) {
+                $('#saveEditBtn').prop('disabled', false).html('<i class="fas fa-save me-1"></i>Save Changes');
+                editModal.hide();
+                showAlert(`Transaction #${id} updated successfully.`);
+                loadData();
+            },
+            error: function(xhr) {
+                $('#saveEditBtn').prop('disabled', false).html('<i class="fas fa-save me-1"></i>Save Changes');
+                const msg = xhr.responseJSON?.message || 'Failed to update transaction.';
+                $('#editModalAlert').removeClass('d-none').text(msg);
+            }
+        });
+    });
+
+    // 9. Delete Transaction Modal Flow
+    const deleteModal = new bootstrap.Modal(document.getElementById('deleteModal'));
+
+    $('#tableBody').on('click', '.delete-btn', function() {
+        const id = $(this).data('id');
+        const inv = $(this).data('invoice');
+        $('#deleteTxId').val(id);
+        $('#deleteInvoiceNumberText').text(inv || `#${id}`);
+        $('#deleteReason').val('User deleted transaction');
+        $('#deleteModalAlert').addClass('d-none');
+        deleteModal.show();
+    });
+
+    $('#confirmDeleteBtn').on('click', function() {
+        const id = $('#deleteTxId').val();
+        const reason = $('#deleteReason').val().trim() || 'User deleted transaction';
+
+        $('#confirmDeleteBtn').prop('disabled', true).html('<i class="fas fa-spinner fa-spin me-1"></i>Deleting...');
+
+        $.ajax({
+            url: `/statement/delete/${id}`,
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ reason: reason }),
+            dataType: 'json',
+            success: function(res) {
+                $('#confirmDeleteBtn').prop('disabled', false).html('<i class="fas fa-trash me-1"></i>Confirm Delete');
+                deleteModal.hide();
+                showAlert(`Transaction #${id} deleted successfully.`);
+                loadData();
+            },
+            error: function(xhr) {
+                $('#confirmDeleteBtn').prop('disabled', false).html('<i class="fas fa-trash me-1"></i>Confirm Delete');
+                const msg = xhr.responseJSON?.message || 'Failed to delete transaction.';
+                $('#deleteModalAlert').removeClass('d-none').text(msg);
+            }
+        });
+    });
+
+    // 10. Bulk Delete Modal Flow
+    const bulkDeleteModal = new bootstrap.Modal(document.getElementById('bulkDeleteModal'));
+
+    $('#bulkDeleteBtn').on('click', function() {
+        if (selectedTxIds.size === 0) return;
+        $('#bulkDeleteCountText').text(selectedTxIds.size);
+        $('#bulkDeleteReason').val('User bulk-deleted transactions');
+        $('#bulkDeleteModalAlert').addClass('d-none');
+        bulkDeleteModal.show();
+    });
+
+    $('#confirmBulkDeleteBtn').on('click', function() {
+        const ids = Array.from(selectedTxIds);
+        const reason = $('#bulkDeleteReason').val().trim() || 'User bulk-deleted transactions';
+
+        $('#confirmBulkDeleteBtn').prop('disabled', true).html('<i class="fas fa-spinner fa-spin me-1"></i>Deleting...');
+
+        $.ajax({
+            url: '/statement/bulk-delete',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ ids: ids, reason: reason }),
+            dataType: 'json',
+            success: function(res) {
+                $('#confirmBulkDeleteBtn').prop('disabled', false).html('<i class="fas fa-trash me-1"></i>Confirm Bulk Delete');
+                bulkDeleteModal.hide();
+                showAlert(`Successfully deleted ${res.deleted_count} transaction(s).`);
+                selectedTxIds.clear();
+                updateSelectedState();
+                loadData();
+            },
+            error: function(xhr) {
+                $('#confirmBulkDeleteBtn').prop('disabled', false).html('<i class="fas fa-trash me-1"></i>Confirm Bulk Delete');
+                const msg = xhr.responseJSON?.message || 'Failed to bulk-delete transactions.';
+                $('#bulkDeleteModalAlert').removeClass('d-none').text(msg);
+            }
+        });
+    });
+
+    // Initialize data load on page ready
+    loadData();
+})();
+</script>
 {% endblock %}

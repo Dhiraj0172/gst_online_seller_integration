@@ -451,3 +451,228 @@ def test_statement_export_isolation(client, statement_env):
     assert 'INV-A-08-001' not in csv_09
     assert 'INV-A-08-002' not in csv_09
     assert 'INV-B-SECRET-001' not in csv_09
+
+
+# 12. Statement HTML page renders with real database context
+def test_statement_page_renders_with_real_database_data(client, statement_env):
+    client.post('/login', data={'username': statement_env['user_a_username'], 'password': 'SecretA123!'}, follow_redirects=True)
+    res = client.get('/statement?return_period=082024')
+    assert res.status_code == 200
+    html = res.get_data(as_text=True)
+    assert 'Manage Statement Data' in html
+    assert '082024' in html
+    assert 'Seller A Retail' in html
+    assert 'statementTabs' in html
+    assert 'tableBody' in html
+
+
+# 13. Statement page period display and selection
+def test_statement_page_period_display_and_selection(client, statement_env):
+    client.post('/login', data={'username': statement_env['user_a_username'], 'password': 'SecretA123!'}, follow_redirects=True)
+    # Default without param resolves to active period
+    res = client.get('/statement')
+    assert res.status_code == 200
+    html = res.get_data(as_text=True)
+    assert 'periodSelect' in html
+    assert '082024' in html
+    assert '092024' in html
+
+    # With explicit query param
+    res_09 = client.get('/statement?return_period=092024')
+    assert res_09.status_code == 200
+    html_09 = res_09.get_data(as_text=True)
+    assert '092024' in html_09
+
+
+# 14. Summary totals reflect real data from current query
+def test_statement_summary_totals_accurate(client, statement_env):
+    client.post('/login', data={'username': statement_env['user_a_username'], 'password': 'SecretA123!'}, follow_redirects=True)
+    res = client.get('/statement/b2b?return_period=082024')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert 'summary' in data
+    summary = data['summary']
+    assert summary['count'] == 2
+    assert summary['total_taxable'] == 3000.0  # 1000 + 2000
+    assert summary['total_tax'] == 540.0       # 180 + 360
+    assert summary['total_invoice_value'] == 3540.0  # 1180 + 2360
+
+    # Summary with search filter
+    res_search = client.get('/statement/b2b?return_period=082024&search=Alpha')
+    assert res_search.status_code == 200
+    search_summary = res_search.get_json()['summary']
+    assert search_summary['count'] == 1
+    assert search_summary['total_taxable'] == 1000.0
+    assert search_summary['total_tax'] == 180.0
+    assert search_summary['total_invoice_value'] == 1180.0
+
+
+# 15. Fetch transaction endpoint validates ownership and is_deleted
+def test_statement_get_transaction_ownership_and_isolation(app, client, statement_env):
+    client.post('/login', data={'username': statement_env['user_a_username'], 'password': 'SecretA123!'}, follow_redirects=True)
+
+    # 1. Owner can fetch
+    res = client.get(f'/statement/transaction/{statement_env["tx_a_08_1_id"]}')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data['id'] == statement_env['tx_a_08_1_id']
+    assert data['invoice_number'] == 'INV-A-08-001'
+    assert data['taxable_value'] == 1000.0
+    assert data['total_tax'] == 180.0
+
+    # 2. Cannot fetch another user's transaction (IDOR)
+    res_idor = client.get(f'/statement/transaction/{statement_env["tx_b_08_1_id"]}')
+    assert res_idor.status_code == 404
+
+    # 3. Cannot fetch deleted transaction
+    with app.app_context():
+        tx = _db.session.get(Transaction, statement_env['tx_a_08_1_id'])
+        tx.is_deleted = True
+        _db.session.commit()
+
+    res_del = client.get(f'/statement/transaction/{statement_env["tx_a_08_1_id"]}')
+    assert res_del.status_code == 404
+
+
+# 16. Bulk delete soft-deletes only owned transactions and updates statement
+def test_statement_bulk_delete_transactions(app, client, statement_env):
+    client.post('/login', data={'username': statement_env['user_a_username'], 'password': 'SecretA123!'}, follow_redirects=True)
+
+    # User A deletes their 2 Period 082024 transactions
+    ids = [statement_env['tx_a_08_1_id'], statement_env['tx_a_08_2_id']]
+    res = client.post('/statement/bulk-delete', json={'ids': ids, 'reason': 'Bulk audit cleanup'})
+    assert res.status_code == 200
+    assert res.get_json()['success'] is True
+    assert res.get_json()['deleted_count'] == 2
+
+    # Verify both are soft-deleted
+    with app.app_context():
+        t1 = _db.session.get(Transaction, statement_env['tx_a_08_1_id'])
+        t2 = _db.session.get(Transaction, statement_env['tx_a_08_2_id'])
+        assert t1.is_deleted is True
+        assert t2.is_deleted is True
+
+        # Verify audit logs
+        audits = AuditLog.query.filter_by(action='DELETE', reason='Bulk audit cleanup').all()
+        assert len(audits) == 2
+
+    # Transactions disappear from statement
+    res_b2b = client.get('/statement/b2b?return_period=082024')
+    assert res_b2b.status_code == 200
+    assert res_b2b.get_json()['total'] == 0
+
+    # Attempting to bulk-delete User B's transaction does NOT delete it
+    res_b_del = client.post('/statement/bulk-delete', json={'ids': [statement_env['tx_b_08_1_id']]})
+    assert res_b_del.status_code == 200
+    assert res_b_del.get_json()['deleted_count'] == 0
+    with app.app_context():
+        tb = _db.session.get(Transaction, statement_env['tx_b_08_1_id'])
+        assert tb.is_deleted is False
+
+
+# 17. All supported sections return real database data
+def test_statement_all_sections_return_real_data(app, client, statement_env):
+    with app.app_context():
+        # Create transactions for each supported section
+        tx_b2c = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-B2C-001',
+            invoice_date=date(2024, 8, 15),
+            supply_type='B2CS',
+            customer_name='Consumer C',
+            taxable_value=Decimal('500.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('45.00'),
+            sgst_amount=Decimal('45.00'),
+            total_tax=Decimal('90.00'),
+            invoice_value=Decimal('590.00'),
+            place_of_supply='27',
+            hsn_sac='8471',
+            is_deleted=False,
+        )
+        tx_cdnr = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='CN-CDNR-001',
+            invoice_date=date(2024, 8, 16),
+            supply_type='CDNR',
+            customer_gstin='27ABCDE1234F1Z5',
+            customer_name='Alpha Buyer',
+            taxable_value=Decimal('200.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('18.00'),
+            sgst_amount=Decimal('18.00'),
+            total_tax=Decimal('36.00'),
+            invoice_value=Decimal('236.00'),
+            place_of_supply='27',
+            hsn_sac='8471',
+            note_type='C',
+            is_deleted=False,
+        )
+        tx_nil = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-NIL-001',
+            invoice_date=date(2024, 8, 17),
+            supply_type='NIL',
+            taxable_value=Decimal('100.00'),
+            tax_rate=Decimal('0.00'),
+            cgst_amount=Decimal('0.00'),
+            sgst_amount=Decimal('0.00'),
+            total_tax=Decimal('0.00'),
+            invoice_value=Decimal('100.00'),
+            place_of_supply='27',
+            hsn_sac='8471',
+            is_deleted=False,
+        )
+        tx_ecom = Transaction(
+            profile_id=statement_env['p_a1_id'],
+            import_history_id=statement_env['imp_a_08_id'],
+            raw_import_id=1,
+            invoice_number='INV-ECOM-001',
+            invoice_date=date(2024, 8, 18),
+            supply_type='B2CS',
+            ecommerce_gstin='27ECOM123456789',
+            taxable_value=Decimal('300.00'),
+            tax_rate=Decimal('18.00'),
+            cgst_amount=Decimal('27.00'),
+            sgst_amount=Decimal('27.00'),
+            total_tax=Decimal('54.00'),
+            invoice_value=Decimal('354.00'),
+            place_of_supply='27',
+            hsn_sac='8471',
+            is_deleted=False,
+        )
+        _db.session.add_all([tx_b2c, tx_cdnr, tx_nil, tx_ecom])
+        _db.session.commit()
+
+    client.post('/login', data={'username': statement_env['user_a_username'], 'password': 'SecretA123!'}, follow_redirects=True)
+
+    # 1. B2C
+    res_b2c = client.get('/statement/b2c?return_period=082024')
+    assert res_b2c.status_code == 200
+    assert any(r['invoice_number'] == 'INV-B2C-001' for r in res_b2c.get_json()['data'])
+
+    # 2. CDNR
+    res_cdnr = client.get('/statement/cdnr?return_period=082024')
+    assert res_cdnr.status_code == 200
+    assert any(r['invoice_number'] == 'CN-CDNR-001' for r in res_cdnr.get_json()['data'])
+
+    # 3. NIL
+    res_nil = client.get('/statement/nil?return_period=082024')
+    assert res_nil.status_code == 200
+    assert any(r['invoice_number'] == 'INV-NIL-001' for r in res_nil.get_json()['data'])
+
+    # 4. HSN
+    res_hsn = client.get('/statement/hsn-b2b?return_period=082024')
+    assert res_hsn.status_code == 200
+    assert res_hsn.get_json()['total'] >= 1
+
+    # 5. ECOM
+    res_ecom = client.get('/statement/ecom?return_period=082024')
+    assert res_ecom.status_code == 200
+    assert any(r['invoice_number'] == 'INV-ECOM-001' for r in res_ecom.get_json()['data'])

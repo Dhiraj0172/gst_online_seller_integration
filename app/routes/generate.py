@@ -51,26 +51,22 @@ def run():
         return redirect(url_for('profile.list_profiles'))
         
     return_period = request.form.get('return_period') or request.args.get('return_period') or session.get('return_period', '012025')
-    force = request.form.get('force') in ('true', '1') or request.args.get('force') in ('true', '1')
-
-    enforce_gate = request.form.get('enforce_gate') in ('true', '1') or request.args.get('enforce_gate') in ('true', '1')
-
-    # Pre-generation reconciliation gate: block generation if critical reconciliation errors exist when enforce_gate is active
+    
+    # Pre-generation reconciliation gate: block generation if critical reconciliation errors exist
     recon_report = run_full_reconciliation(profile.id, return_period)
     if recon_report.is_generation_blocked:
-        if enforce_gate and not force:
-            flash(
-                f"GSTR-1 generation is blocked: {recon_report.critical_failures} critical reconciliation error(s) detected. "
-                "Please review and fix validation errors before generating returns.",
-                "danger",
-            )
-            return redirect(url_for('statement.validation_errors', return_period=return_period))
-        elif not force:
-            flash(
-                f"Note: Generated with {recon_report.critical_failures} reconciliation error(s). "
-                "Pre-filing review recommended.",
-                "warning",
-            )
+        flash(
+            f"GSTR-1 generation is blocked: {recon_report.critical_failures} critical reconciliation error(s) detected. "
+            "Please review and fix validation errors before generating returns.",
+            "danger",
+        )
+        return redirect(url_for('statement.validation_errors', return_period=return_period))
+    elif recon_report.status == 'WARNING':
+        flash(
+            f"Note: Generated with {recon_report.warnings} reconciliation warning(s). "
+            "Pre-filing review recommended.",
+            "warning",
+        )
     try:
         gen_result = generate_gstr1(str(profile.id), return_period)
         

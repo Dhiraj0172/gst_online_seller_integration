@@ -631,30 +631,87 @@ def test_15_no_fake_static_validation_data(client, review_env):
     assert res_clean['issues'] != res_err['issues']
 
 
-def test_16_generation_gate_blocks_generation_unless_bypassed(client, review_env):
-    """16. Generation gate prevents GSTR-1 generation when reconciliation is BLOCKED, but allows force bypass."""
+def test_16_blocked_reconciliation_prevents_normal_generation(client, review_env):
+    """1. blocked reconciliation prevents normal generation."""
     client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
-
-    # 1. Period 102024 has critical errors with enforce_gate active -> generation must be blocked
-    res_blocked = client.post('/generate/run', data={'return_period': '102024', 'enforce_gate': 'true'}, follow_redirects=False)
+    res_blocked = client.post('/generate/run', data={'return_period': '102024'}, follow_redirects=False)
     assert res_blocked.status_code == 302
     assert '/statement/validation-errors' in res_blocked.location
 
-    # 2. Period 102024 with enforce_gate and force=true -> bypass gate
-    res_forced = client.post('/generate/run', data={'return_period': '102024', 'enforce_gate': 'true', 'force': 'true'}, follow_redirects=False)
-    # Redirects to generate.index upon completion
-    assert res_forced.status_code == 302
-    assert '/generate' in res_forced.location
-    assert '/statement/validation-errors' not in res_forced.location
+def test_17_warning_only_reconciliation_allows_generation(client, review_env):
+    """2. warning-only reconciliation allows generation."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    res_warn = client.post('/generate/run', data={'return_period': '092024'}, follow_redirects=False)
+    assert res_warn.status_code == 302
+    assert '/generate' in res_warn.location
+    assert '/statement/validation-errors' not in res_warn.location
 
-    # 3. Period 082024 (clean data) with enforce_gate -> generation proceeds normally without redirect to validation-errors
-    res_clean = client.post('/generate/run', data={'return_period': '082024', 'enforce_gate': 'true'}, follow_redirects=False)
+def test_18_clean_reconciliation_allows_generation(client, review_env):
+    """3. clean reconciliation allows generation."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    res_clean = client.post('/generate/run', data={'return_period': '082024'}, follow_redirects=False)
     assert res_clean.status_code == 302
     assert '/generate' in res_clean.location
     assert '/statement/validation-errors' not in res_clean.location
 
+def test_19_post_force_true_cannot_bypass_blocked_status(client, review_env):
+    """4. POST force=true cannot bypass BLOCKED status."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    res_blocked = client.post('/generate/run', data={'return_period': '102024', 'force': 'true'}, follow_redirects=False)
+    assert res_blocked.status_code == 302
+    assert '/statement/validation-errors' in res_blocked.location
 
-def test_17_html_validation_errors_page_renders_real_review(client, review_env):
+def test_20_post_enforce_gate_false_cannot_bypass_blocked_status(client, review_env):
+    """5. POST enforce_gate=false cannot bypass BLOCKED status."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    res_blocked = client.post('/generate/run', data={'return_period': '102024', 'enforce_gate': 'false'}, follow_redirects=False)
+    assert res_blocked.status_code == 302
+    assert '/statement/validation-errors' in res_blocked.location
+
+def test_21_get_query_parameter_force_true_cannot_bypass_blocked_status(client, review_env):
+    """6. GET query parameter force=true cannot bypass BLOCKED status."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    res_blocked = client.get('/generate/run?return_period=102024&force=true', follow_redirects=False)
+    assert res_blocked.status_code == 302
+    assert '/statement/validation-errors' in res_blocked.location
+
+def test_22_get_query_parameter_enforce_gate_false_cannot_bypass_blocked_status(client, review_env):
+    """7. GET query parameter enforce_gate=false cannot bypass BLOCKED status."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    res_blocked = client.get('/generate/run?return_period=102024&enforce_gate=false', follow_redirects=False)
+    assert res_blocked.status_code == 302
+    assert '/statement/validation-errors' in res_blocked.location
+
+def test_23_hidden_form_field_manipulation_cannot_bypass_server_side_gate(client, review_env):
+    """8. hidden/form field manipulation cannot bypass the server-side gate."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    # Simulate someone adding hidden fields
+    res_blocked = client.post('/generate/run', data={'return_period': '102024', 'enforce_gate': '0', 'force': '1', 'bypass': 'true'}, follow_redirects=False)
+    assert res_blocked.status_code == 302
+    assert '/statement/validation-errors' in res_blocked.location
+
+def test_24_cross_profile_generation_remains_isolated(client, review_env):
+    """9. cross-profile generation remains isolated."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    # Attempting to generate for User B's profile when logged in as User A
+    # The generation uses `get_active_profile()` which uses `current_user.id`. 
+    # If we pass profile_id in args, it validates it against current_user.
+    res = client.post(f"/generate/run?profile_id={review_env['p_b1_id']}&return_period=102024", follow_redirects=False)
+    # Since p_b1 is not owned by user_a, it shouldn't allow it. It defaults to the first profile owned by User A.
+    # Therefore, it's actually running generation for User A's profile A1 for period 102024 which is BLOCKED.
+    assert res.status_code == 302
+    assert '/statement/validation-errors' in res.location
+
+def test_25_generation_remains_functional_after_security_hardening(client, review_env):
+    """10. generation remains functional after the security hardening."""
+    client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
+    # Run clean data generation
+    res_clean = client.post('/generate/run', data={'return_period': '082024'}, follow_redirects=True)
+    assert res_clean.status_code == 200
+    html = res_clean.data.decode('utf-8')
+    assert 'GSTR-1 Excel and JSON generated successfully!' in html
+
+def test_26_html_validation_errors_page_renders_real_review(client, review_env):
     """17. HTML pre-filing review page (/statement/validation-errors) renders real backend review."""
     client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
     res = client.get('/statement/validation-errors?return_period=102024')
@@ -677,3 +734,4 @@ def test_17_html_validation_errors_page_renders_real_review(client, review_env):
 
     # Other user's transaction must not appear
     assert 'INV-USER-B-SECRET-777' not in html
+

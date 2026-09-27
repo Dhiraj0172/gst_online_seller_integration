@@ -67,18 +67,13 @@
 
                 <form action="{{ url_for('generate.run') }}" method="POST" id="generateForm">
                     <input type="hidden" name="return_period" value="{{ return_period }}">
-                    <input type="hidden" name="enforce_gate" value="true">
                     <div class="form-check mb-3">
                         <input class="form-check-input" type="checkbox" id="includeHsn" name="include_hsn" checked>
                         <label class="form-check-label" for="includeHsn">Include HSN details</label>
                     </div>
                     {% if recon_report and recon_report.is_generation_blocked %}
-                    <div class="form-check mb-3">
-                        <input class="form-check-input" type="checkbox" id="forceBypass" name="force" value="true">
-                        <label class="form-check-label text-danger" for="forceBypass">Force generation despite blocking errors (Bypass gate)</label>
-                    </div>
-                    <button type="submit" class="btn btn-warning w-100" id="generateBtnBlocked">
-                        <i class="fas fa-exclamation-triangle me-1"></i>Generate Return Files (Bypass Gate)
+                    <button type="button" class="btn btn-secondary w-100" disabled>
+                        <i class="fas fa-lock me-1"></i>Generation Blocked - Resolve Issues First
                     </button>
                     {% else %}
                     <button type="submit" class="btn btn-success w-100" id="generateBtn">

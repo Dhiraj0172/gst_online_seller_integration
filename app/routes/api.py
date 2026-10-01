@@ -7,6 +7,7 @@ from app import db
 from app.services.reconciliation_service import run_full_reconciliation
 from app.services.validation_service import get_pre_filing_review, get_validation_issues
 from app.services.gstr1_generator import generate_gstr1
+from app.services.audit_service import log_generation_audit
 from . import api_bp
 
 def get_active_profile_id():
@@ -236,6 +237,17 @@ def api_generate():
             rule_version=rule_ver
         )
         db.session.add(gen)
+        db.session.flush()
+
+        log_generation_audit(
+            user_id=current_user.id,
+            action='CREATE',
+            generation=gen,
+            return_period=return_period,
+            profile_id=profile.id,
+            commit=False
+        )
+
         db.session.commit()
 
         resp_data = {

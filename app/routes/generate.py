@@ -6,6 +6,7 @@ from flask_login import login_required, current_user
 from app.models import GSTR1Generation, GSTProfile
 from app.services.gstr1_generator import generate_gstr1
 from app.services.reconciliation_service import run_full_reconciliation
+from app.services.audit_service import log_generation_audit, extract_generation_summary
 from app.extensions import db
 from . import generate_bp
 
@@ -43,7 +44,7 @@ def index():
         return_period=return_period,
     )
 
-def _save_generation_record(profile, return_period, gen_result, recon_report, existing_gen_id=None):
+def _save_generation_record(profile, return_period, gen_result, recon_report, existing_gen_id=None, audit_action='CREATE', old_summary=None):
     stats = gen_result.stats or {}
     val_passed = gen_result.validation_result.is_valid if gen_result.validation_result else True
     val_errors = json.dumps(gen_result.validation_result.errors) if gen_result.validation_result and hasattr(gen_result.validation_result, 'errors') else "[]"
@@ -58,6 +59,10 @@ def _save_generation_record(profile, return_period, gen_result, recon_report, ex
             gen = GSTR1Generation.query.filter_by(id=int(existing_gen_id), profile_id=profile.id).first()
         except (ValueError, TypeError):
             gen = None
+
+    if gen and not old_summary and audit_action == 'REGENERATE':
+        old_summary = extract_generation_summary(gen)
+        old_summary['previous_generation_id'] = gen.id
 
     if gen:
         gen.generation_status = 'COMPLETED'
@@ -86,9 +91,10 @@ def _save_generation_record(profile, return_period, gen_result, recon_report, ex
         gen.rule_version = rule_ver
         gen.financial_year = rule_ver
     else:
+        user_id = current_user.id if (current_user and current_user.is_authenticated) else profile.user_id
         gen = GSTR1Generation(
             profile_id=profile.id,
-            user_id=current_user.id,
+            user_id=user_id,
             return_period=return_period,
             financial_year=rule_ver,
             generation_status='COMPLETED',
@@ -118,6 +124,20 @@ def _save_generation_record(profile, return_period, gen_result, recon_report, ex
             rule_version=rule_ver
         )
         db.session.add(gen)
+
+    db.session.flush()
+
+    audit_user_id = current_user.id if (current_user and current_user.is_authenticated) else profile.user_id
+    log_generation_audit(
+        user_id=audit_user_id,
+        action=audit_action,
+        generation=gen,
+        return_period=return_period,
+        profile_id=profile.id,
+        old_summary=old_summary,
+        commit=False
+    )
+
     db.session.commit()
     return gen
 
@@ -181,18 +201,29 @@ def download_excel(id):
     if not profile:
         abort(404)
     gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    filename = f"GSTR1_{profile.gstin}_{gen.return_period}.xlsx"
+    log_generation_audit(
+        user_id=current_user.id,
+        action='DOWNLOAD',
+        generation=gen,
+        return_period=gen.return_period,
+        profile_id=profile.id,
+        format='excel',
+        filename=filename,
+        commit=True
+    )
     if gen.excel_file_path and os.path.exists(gen.excel_file_path):
         return send_file(
             gen.excel_file_path,
             as_attachment=True,
-            download_name=f"GSTR1_{profile.gstin}_{gen.return_period}.xlsx"
+            download_name=filename
         )
     # If not on disk, regenerate on the fly
     gen_result = generate_gstr1(str(profile.id), gen.return_period)
     return send_file(
         gen_result.excel_path,
         as_attachment=True,
-        download_name=f"GSTR1_{profile.gstin}_{gen.return_period}.xlsx"
+        download_name=filename
     )
 
 @generate_bp.route('/generate/download/json/<int:id>')
@@ -202,18 +233,29 @@ def download_json(id):
     if not profile:
         abort(404)
     gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    filename = f"GSTR1_{profile.gstin}_{gen.return_period}.json"
+    log_generation_audit(
+        user_id=current_user.id,
+        action='DOWNLOAD',
+        generation=gen,
+        return_period=gen.return_period,
+        profile_id=profile.id,
+        format='json',
+        filename=filename,
+        commit=True
+    )
     if gen.json_file_path and os.path.exists(gen.json_file_path):
         return send_file(
             gen.json_file_path,
             as_attachment=True,
-            download_name=f"GSTR1_{profile.gstin}_{gen.return_period}.json",
+            download_name=filename,
             mimetype="application/json"
         )
     gen_result = generate_gstr1(str(profile.id), gen.return_period)
     return send_file(
         gen_result.json_path,
         as_attachment=True,
-        download_name=f"GSTR1_{profile.gstin}_{gen.return_period}.json",
+        download_name=filename,
         mimetype="application/json"
     )
 
@@ -238,16 +280,27 @@ def regenerate():
     existing_id = request.form.get('id') or request.form.get('generation_id') or request.args.get('id') or request.args.get('generation_id')
     return_period = request.form.get('return_period') or request.args.get('return_period')
 
-    if existing_id and not return_period:
+    previous_gen = None
+    if existing_id:
         try:
-            existing = GSTR1Generation.query.filter_by(id=int(existing_id), profile_id=profile.id).first()
-            if existing:
-                return_period = existing.return_period
+            previous_gen = GSTR1Generation.query.filter_by(id=int(existing_id), profile_id=profile.id).first()
+            if previous_gen and not return_period:
+                return_period = previous_gen.return_period
         except (ValueError, TypeError):
             pass
 
     if not return_period:
         return_period = session.get('return_period', '012025')
+
+    if not previous_gen and return_period:
+        previous_gen = GSTR1Generation.query.filter_by(
+            profile_id=profile.id,
+            return_period=return_period
+        ).order_by(GSTR1Generation.created_at.desc()).first()
+
+    old_summary = extract_generation_summary(previous_gen) if previous_gen else None
+    if previous_gen and old_summary:
+        old_summary['previous_generation_id'] = previous_gen.id
 
     include_hsn_val = request.form.get('include_hsn') or request.args.get('include_hsn')
     include_hsn = True if include_hsn_val is None else str(include_hsn_val).lower() not in ('0', 'false', 'f')
@@ -276,7 +329,15 @@ def regenerate():
             financial_year=profile.financial_year,
             reconciliation_report=recon_report.to_dict()
         )
-        _save_generation_record(profile, return_period, gen_result, recon_report, existing_gen_id=existing_id)
+        _save_generation_record(
+            profile,
+            return_period,
+            gen_result,
+            recon_report,
+            existing_gen_id=existing_id,
+            audit_action='REGENERATE',
+            old_summary=old_summary
+        )
         flash('GSTR-1 regenerated successfully!', 'success')
     except Exception as e:
         db.session.rollback()

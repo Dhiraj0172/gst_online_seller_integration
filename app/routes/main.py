@@ -2,17 +2,10 @@ from flask import render_template, redirect, url_for, session, request
 from flask_login import login_required, current_user
 from sqlalchemy import func
 from app.extensions import db
-from app.models import GSTProfile, Transaction, ImportHistory
+from app.models import GSTProfile, Transaction, ImportHistory, GSTR1Generation
 from . import main_bp
 
-@main_bp.route('/')
-@login_required
-def index():
-    return redirect(url_for('main.dashboard'))
-
-@main_bp.route('/dashboard')
-@login_required
-def dashboard():
+def _get_active_profile():
     requested_id = request.args.get('profile_id') or session.get('active_profile_id')
     profile = None
     if requested_id:
@@ -28,6 +21,17 @@ def dashboard():
         profile = GSTProfile.query.filter_by(user_id=current_user.id).first()
         if profile:
             session['active_profile_id'] = profile.id
+    return profile
+
+@main_bp.route('/')
+@login_required
+def index():
+    return redirect(url_for('main.dashboard'))
+
+@main_bp.route('/dashboard')
+@login_required
+def dashboard():
+    profile = _get_active_profile()
 
     stats = {
         'total_invoices': 0,
@@ -62,6 +66,17 @@ def dashboard():
         breakdown['cdnr'] = tx_query.filter(Transaction.supply_type.in_(['CDNR', 'CDNUR'])).count()
         breakdown['nil'] = tx_query.filter(Transaction.supply_type.in_(['NIL', 'EXEMPT', 'NONGST'])).count()
 
+        # Phase 5E-4: Query latest GSTR1Generation for active profile to determine real gstr1_status
+        gen_query = GSTR1Generation.query.filter_by(profile_id=profile.id)
+        return_period = request.args.get('return_period')
+        if return_period:
+            gen_query = gen_query.filter_by(return_period=return_period)
+        latest_gen = gen_query.order_by(GSTR1Generation.created_at.desc()).first()
+        if latest_gen and latest_gen.generation_status == 'COMPLETED':
+            stats['gstr1_status'] = 'Generated'
+        else:
+            stats['gstr1_status'] = 'Pending'
+
     return render_template(
         'dashboard.html',
         stats=stats,
@@ -77,7 +92,13 @@ def settings():
 @main_bp.route('/downloads')
 @login_required
 def downloads():
-    return render_template('downloads.html')
+    profile = _get_active_profile()
+    generations = []
+    if profile:
+        generations = GSTR1Generation.query.filter_by(
+            profile_id=profile.id
+        ).order_by(GSTR1Generation.created_at.desc()).all()
+    return render_template('downloads.html', generations=generations)
 
 @main_bp.route('/errors')
 @login_required

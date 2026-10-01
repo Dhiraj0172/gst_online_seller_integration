@@ -543,7 +543,7 @@ class TestFlipkartRowParsingAndPrecision:
 class TestFlipkartPipelinePersistence:
     """End-to-end import pipeline persistence, batching, and tenant isolation."""
 
-    def test_12_in_file_duplicate_rows_marked_skipped(self, app, db, flipkart_tenants):
+    def test_12_in_file_duplicate_rows_marked_skipped(self, app, db, flipkart_tenants, tmp_path):
         """Duplicate rows within the same file are detected and marked SKIPPED."""
         p_id = flipkart_tenants['profile1_id']
         u_id = flipkart_tenants['user1_id']
@@ -569,8 +569,9 @@ class TestFlipkartPipelinePersistence:
             },
         ]
         wb = _make_flipkart_workbook(rows)
-        path = os.path.join(FIXTURE_DIR, 'test_flipkart_in_file_dup.xlsx')
+        path = str(tmp_path / 'test_flipkart_in_file_dup.xlsx')
         wb.save(path)
+        wb.close()
         try:
             with app.app_context():
                 res = process_import(
@@ -593,7 +594,10 @@ class TestFlipkartPipelinePersistence:
                 assert ih.skipped_rows == 1
         finally:
             if os.path.exists(path):
-                os.remove(path)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
     def test_13_full_file_duplicate_reimport(self, app, db, flipkart_tenants):
         """Re-uploading the exact same file is rejected as a duplicate file."""
@@ -724,7 +728,7 @@ class TestFlipkartPipelinePersistence:
             assert failed_ih is not None
             assert RawImport.query.filter_by(import_history_id=failed_ih.id).count() == 0
 
-    def test_17_tenant_isolation(self, app, db, flipkart_tenants):
+    def test_17_tenant_isolation(self, app, db, flipkart_tenants, tmp_path):
         """Transactions imported for Profile 1 are completely isolated from Profile 2."""
         p1_id = flipkart_tenants['profile1_id']
         u1_id = flipkart_tenants['user1_id']
@@ -753,12 +757,14 @@ class TestFlipkartPipelinePersistence:
         ]
 
         wb1 = _make_flipkart_workbook(rows_p1)
-        path1 = os.path.join(FIXTURE_DIR, 'test_tenant_p1.xlsx')
+        path1 = str(tmp_path / 'test_tenant_p1.xlsx')
         wb1.save(path1)
+        wb1.close()
 
         wb2 = _make_flipkart_workbook(rows_p2)
-        path2 = os.path.join(FIXTURE_DIR, 'test_tenant_p2.xlsx')
+        path2 = str(tmp_path / 'test_tenant_p2.xlsx')
         wb2.save(path2)
+        wb2.close()
 
         try:
             with app.app_context():
@@ -777,7 +783,10 @@ class TestFlipkartPipelinePersistence:
         finally:
             for p in (path1, path2):
                 if os.path.exists(p):
-                    os.remove(p)
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
     def test_19_all_existing_adapter_registrations_remain_valid(self):
         """All existing adapters remain properly registered and resolve deterministically."""

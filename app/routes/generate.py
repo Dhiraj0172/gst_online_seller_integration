@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime
 from flask import render_template, request, session, flash, redirect, url_for, jsonify, send_file, abort, current_app
 from flask_login import login_required, current_user
@@ -42,6 +43,84 @@ def index():
         return_period=return_period,
     )
 
+def _save_generation_record(profile, return_period, gen_result, recon_report, existing_gen_id=None):
+    stats = gen_result.stats or {}
+    val_passed = gen_result.validation_result.is_valid if gen_result.validation_result else True
+    val_errors = json.dumps(gen_result.validation_result.errors) if gen_result.validation_result and hasattr(gen_result.validation_result, 'errors') else "[]"
+    recon_json = json.dumps(recon_report.to_dict() if hasattr(recon_report, 'to_dict') else recon_report)
+    schema_ver = "1.1"
+    rule_ver = profile.financial_year or "2024-25"
+    now = datetime.utcnow()
+
+    gen = None
+    if existing_gen_id:
+        try:
+            gen = GSTR1Generation.query.filter_by(id=int(existing_gen_id), profile_id=profile.id).first()
+        except (ValueError, TypeError):
+            gen = None
+
+    if gen:
+        gen.generation_status = 'COMPLETED'
+        gen.generation_completed_at = now
+        gen.excel_file_path = gen_result.excel_path
+        gen.json_file_path = gen_result.json_path
+        gen.total_b2b = stats.get('total_b2b', 0)
+        gen.total_b2cs = stats.get('total_b2cs', 0)
+        gen.total_b2cl = stats.get('total_b2cl', 0)
+        gen.total_cdnr = stats.get('total_cdnr', 0)
+        gen.total_cdnur = stats.get('total_cdnur', 0)
+        gen.total_nil = stats.get('total_nil', 0)
+        gen.total_hsn_b2b = stats.get('total_hsn_b2b', 0)
+        gen.total_hsn_b2c = stats.get('total_hsn_b2c', 0)
+        gen.total_ecom = stats.get('total_ecom', 0)
+        gen.total_taxable_value = stats.get('total_taxable_value', 0)
+        gen.total_cgst = stats.get('total_cgst', 0)
+        gen.total_sgst = stats.get('total_sgst', 0)
+        gen.total_igst = stats.get('total_igst', 0)
+        gen.total_cess = stats.get('total_cess', 0)
+        gen.total_tax = stats.get('total_tax', 0)
+        gen.validation_passed = val_passed
+        gen.validation_errors = val_errors
+        gen.reconciliation_report = recon_json
+        gen.schema_version = schema_ver
+        gen.rule_version = rule_ver
+        gen.financial_year = rule_ver
+    else:
+        gen = GSTR1Generation(
+            profile_id=profile.id,
+            user_id=current_user.id,
+            return_period=return_period,
+            financial_year=rule_ver,
+            generation_status='COMPLETED',
+            generation_started_at=now,
+            generation_completed_at=now,
+            excel_file_path=gen_result.excel_path,
+            json_file_path=gen_result.json_path,
+            total_b2b=stats.get('total_b2b', 0),
+            total_b2cs=stats.get('total_b2cs', 0),
+            total_b2cl=stats.get('total_b2cl', 0),
+            total_cdnr=stats.get('total_cdnr', 0),
+            total_cdnur=stats.get('total_cdnur', 0),
+            total_nil=stats.get('total_nil', 0),
+            total_hsn_b2b=stats.get('total_hsn_b2b', 0),
+            total_hsn_b2c=stats.get('total_hsn_b2c', 0),
+            total_ecom=stats.get('total_ecom', 0),
+            total_taxable_value=stats.get('total_taxable_value', 0),
+            total_cgst=stats.get('total_cgst', 0),
+            total_sgst=stats.get('total_sgst', 0),
+            total_igst=stats.get('total_igst', 0),
+            total_cess=stats.get('total_cess', 0),
+            total_tax=stats.get('total_tax', 0),
+            validation_passed=val_passed,
+            validation_errors=val_errors,
+            reconciliation_report=recon_json,
+            schema_version=schema_ver,
+            rule_version=rule_ver
+        )
+        db.session.add(gen)
+    db.session.commit()
+    return gen
+
 @generate_bp.route('/generate/run', methods=['POST', 'GET'])
 @login_required
 def run():
@@ -51,7 +130,9 @@ def run():
         return redirect(url_for('profile.list_profiles'))
         
     return_period = request.form.get('return_period') or request.args.get('return_period') or session.get('return_period', '012025')
-    
+    include_hsn_val = request.form.get('include_hsn') or request.args.get('include_hsn')
+    include_hsn = True if include_hsn_val is None else str(include_hsn_val).lower() not in ('0', 'false', 'f')
+
     # Pre-generation reconciliation gate: block generation if critical reconciliation errors exist
     recon_report = run_full_reconciliation(profile.id, return_period)
     if recon_report.is_generation_blocked:
@@ -68,30 +149,21 @@ def run():
             "warning",
         )
     try:
-        gen_result = generate_gstr1(str(profile.id), return_period)
-        
-        gen = GSTR1Generation(
-            profile_id=profile.id,
-            user_id=current_user.id,
-            return_period=return_period,
-            generation_status='COMPLETED',
-            excel_file_path=gen_result.excel_path,
-            json_file_path=gen_result.json_path,
-            total_b2b=gen_result.stats.get('total_invoices', 0),
-            total_taxable_value=gen_result.stats.get('total_taxable_value', 0),
-            validation_passed=gen_result.validation_result.is_valid if gen_result.validation_result else True,
-            generation_started_at=datetime.utcnow(),
-            generation_completed_at=datetime.utcnow()
+        gen_result = generate_gstr1(
+            str(profile.id),
+            return_period,
+            include_hsn=include_hsn,
+            financial_year=profile.financial_year,
+            reconciliation_report=recon_report.to_dict()
         )
-        db.session.add(gen)
-        db.session.commit()
+        _save_generation_record(profile, return_period, gen_result, recon_report)
         flash('GSTR-1 Excel and JSON generated successfully!', 'success')
     except Exception as e:
         db.session.rollback()
         current_app.logger.exception(f"Error during GSTR-1 generation: {e}")
         flash('An error occurred during GSTR-1 generation. Please verify your data and try again.', 'danger')
         
-    return redirect(url_for('generate.index'))
+    return redirect(url_for('generate.index', return_period=return_period))
 
 @generate_bp.route('/generate/status/<int:id>')
 @login_required
@@ -155,7 +227,61 @@ def validation(id):
             return redirect(url_for('statement.validation_errors', return_period=gen.return_period))
     return redirect(url_for('statement.validation_errors'))
 
-@generate_bp.route('/generate/regenerate', methods=['POST'])
+@generate_bp.route('/generate/regenerate', methods=['POST', 'GET'])
 @login_required
 def regenerate():
-    return redirect(url_for('generate.run'))
+    profile = get_active_profile()
+    if not profile:
+        flash('Active profile required', 'danger')
+        return redirect(url_for('profile.list_profiles'))
+
+    existing_id = request.form.get('id') or request.form.get('generation_id') or request.args.get('id') or request.args.get('generation_id')
+    return_period = request.form.get('return_period') or request.args.get('return_period')
+
+    if existing_id and not return_period:
+        try:
+            existing = GSTR1Generation.query.filter_by(id=int(existing_id), profile_id=profile.id).first()
+            if existing:
+                return_period = existing.return_period
+        except (ValueError, TypeError):
+            pass
+
+    if not return_period:
+        return_period = session.get('return_period', '012025')
+
+    include_hsn_val = request.form.get('include_hsn') or request.args.get('include_hsn')
+    include_hsn = True if include_hsn_val is None else str(include_hsn_val).lower() not in ('0', 'false', 'f')
+
+    # Pre-generation reconciliation gate: block generation if critical reconciliation errors exist
+    recon_report = run_full_reconciliation(profile.id, return_period)
+    if recon_report.is_generation_blocked:
+        flash(
+            f"GSTR-1 generation is blocked: {recon_report.critical_failures} critical reconciliation error(s) detected. "
+            "Please review and fix validation errors before generating returns.",
+            "danger",
+        )
+        return redirect(url_for('statement.validation_errors', return_period=return_period))
+    elif recon_report.status == 'WARNING':
+        flash(
+            f"Note: Generated with {recon_report.warnings} reconciliation warning(s). "
+            "Pre-filing review recommended.",
+            "warning",
+        )
+
+    try:
+        gen_result = generate_gstr1(
+            str(profile.id),
+            return_period,
+            include_hsn=include_hsn,
+            financial_year=profile.financial_year,
+            reconciliation_report=recon_report.to_dict()
+        )
+        _save_generation_record(profile, return_period, gen_result, recon_report, existing_gen_id=existing_id)
+        flash('GSTR-1 regenerated successfully!', 'success')
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception(f"Error during GSTR-1 regeneration: {e}")
+        flash('An error occurred during GSTR-1 generation. Please verify your data and try again.', 'danger')
+
+    return redirect(url_for('generate.index', return_period=return_period))
+

@@ -686,7 +686,7 @@ class TestMeeshoSyntheticReturnsAndNotes:
 class TestMeeshoDuplicatesAndPersistence:
     """In-file duplicate skip, full-file re-import duplicate check, persistence, rollback & isolation."""
 
-    def test_28_in_file_duplicate(self, app, db, meesho_tenants):
+    def test_28_in_file_duplicate(self, app, db, meesho_tenants, tmp_path):
         """Duplicate Sub Order ID in same file is marked SKIPPED."""
         p_id = meesho_tenants['profile1_id']
         u_id = meesho_tenants['user1_id']
@@ -707,8 +707,9 @@ class TestMeeshoDuplicatesAndPersistence:
             },
         ]
         wb = _make_meesho_workbook(rows)
-        path = os.path.join(FIXTURE_DIR, 'test_meesho_dupes.xlsx')
+        path = str(tmp_path / 'test_meesho_dupes.xlsx')
         wb.save(path)
+        wb.close()
         try:
             with app.app_context():
                 res = process_import(
@@ -726,7 +727,10 @@ class TestMeeshoDuplicatesAndPersistence:
                 assert res.status == 'PARTIAL'
         finally:
             if os.path.exists(path):
-                os.remove(path)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
     def test_29_full_file_duplicate_reimport(self, app, db, meesho_tenants):
         """Re-importing identical Meesho file without allow_duplicate_file is rejected."""
@@ -821,7 +825,7 @@ class TestMeeshoDuplicatesAndPersistence:
             total_taxable = sum(t.taxable_value for t in txs)
             assert total_taxable == Decimal('1565780.61')
 
-    def test_31_batch_boundary_rollback(self, app, db, meesho_tenants):
+    def test_31_batch_boundary_rollback(self, app, db, meesho_tenants, tmp_path):
         """Failure after first batch flush (>1000 rows) rolls back cleanly with 0 orphaned records."""
         p1_id = meesho_tenants['profile1_id']
         p2_id = meesho_tenants['profile2_id']
@@ -836,8 +840,9 @@ class TestMeeshoDuplicatesAndPersistence:
             'Supply Type': 'Regular',
         }]
         wb_p2 = _make_meesho_workbook(p2_row)
-        path_p2 = os.path.join(FIXTURE_DIR, 'test_batch_seed_p2.xlsx')
+        path_p2 = str(tmp_path / 'test_batch_seed_p2.xlsx')
         wb_p2.save(path_p2)
+        wb_p2.close()
 
         # Generate 1050 valid Meesho rows (>1000 row batch boundary)
         rows_1050 = []
@@ -855,8 +860,9 @@ class TestMeeshoDuplicatesAndPersistence:
                 'Supply Type': 'Regular',
             })
         wb_batch = _make_meesho_workbook(rows_1050)
-        path_batch = os.path.join(FIXTURE_DIR, 'test_batch_1050.xlsx')
+        path_batch = str(tmp_path / 'test_batch_1050.xlsx')
         wb_batch.save(path_batch)
+        wb_batch.close()
 
         try:
             with app.app_context():
@@ -911,9 +917,12 @@ class TestMeeshoDuplicatesAndPersistence:
         finally:
             for p in (path_p2, path_batch):
                 if os.path.exists(p):
-                    os.remove(p)
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
-    def test_32_tenant_isolation(self, app, db, meesho_tenants):
+    def test_32_tenant_isolation(self, app, db, meesho_tenants, tmp_path):
         """Transactions imported for Profile 1 are completely isolated from Profile 2."""
         p1_id = meesho_tenants['profile1_id']
         u1_id = meesho_tenants['user1_id']
@@ -934,12 +943,14 @@ class TestMeeshoDuplicatesAndPersistence:
         }]
 
         wb1 = _make_meesho_workbook(rows_p1)
-        path1 = os.path.join(FIXTURE_DIR, 'test_meesho_tenant_p1.xlsx')
+        path1 = str(tmp_path / 'test_meesho_tenant_p1.xlsx')
         wb1.save(path1)
+        wb1.close()
 
         wb2 = _make_meesho_workbook(rows_p2)
-        path2 = os.path.join(FIXTURE_DIR, 'test_meesho_tenant_p2.xlsx')
+        path2 = str(tmp_path / 'test_meesho_tenant_p2.xlsx')
         wb2.save(path2)
+        wb2.close()
 
         try:
             with app.app_context():
@@ -958,7 +969,10 @@ class TestMeeshoDuplicatesAndPersistence:
         finally:
             for p in (path1, path2):
                 if os.path.exists(p):
-                    os.remove(p)
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
     def test_33_registry_determinism_and_order_independence(self):
         """app.adapters.meesho.MeeshoAdapter always wins registration deterministically."""

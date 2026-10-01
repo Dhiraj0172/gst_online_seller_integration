@@ -85,17 +85,105 @@
         </div>
     </div>
     <div class="col-md-6">
-        <div class="card shadow h-100" id="resultCard" style="display: none;">
-            <div class="card-body text-center">
-                <h5 class="card-title text-success"><i class="fas fa-check-circle fa-2x mb-2"></i><br>Generation Complete</h5>
-                <div class="mt-4">
-                    <a href="#" class="btn btn-outline-primary mb-2 w-75"><i class="fas fa-file-excel me-2"></i>Download Excel</a>
-                    <a href="#" class="btn btn-outline-info mb-2 w-75"><i class="fas fa-file-code me-2"></i>Download JSON</a>
+        {% set latest_gen = generations[0] if (generations and generations|length > 0) else none %}
+        <div class="card shadow mb-4" id="resultCard" {% if not (latest_gen and latest_gen.generation_status == 'COMPLETED') %}style="display: none;"{% endif %}>
+            <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                <span class="fw-bold"><i class="fas fa-check-circle me-2"></i>Generation Complete</span>
+                {% if latest_gen %}
+                <span class="badge bg-light text-success fw-bold">{{ latest_gen.return_period }}</span>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if latest_gen %}
+                {% set total_inv = (latest_gen.total_b2b or 0) + (latest_gen.total_b2cs or 0) + (latest_gen.total_b2cl or 0) + (latest_gen.total_cdnr or 0) + (latest_gen.total_cdnur or 0) + (latest_gen.total_nil or 0) + (latest_gen.total_ecom or 0) %}
+                {% set total_tax = (latest_gen.total_cgst or 0) + (latest_gen.total_sgst or 0) + (latest_gen.total_igst or 0) + (latest_gen.total_cess or 0) %}
+                <div class="row g-2 mb-3 text-center">
+                    <div class="col-4">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">Invoices</small>
+                            <span class="fw-bold fs-5" id="metricInvoices">{{ total_inv }}</span>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">B2B</small>
+                            <span class="fw-bold fs-5" id="metricB2B">{{ latest_gen.total_b2b or 0 }}</span>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">B2CS</small>
+                            <span class="fw-bold fs-5" id="metricB2CS">{{ latest_gen.total_b2cs or 0 }}</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">Taxable Value</small>
+                            <span class="fw-bold fs-6" id="metricTaxable">₹{{ "{:,.2f}".format(latest_gen.total_taxable_value or 0) }}</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">Total Tax</small>
+                            <span class="fw-bold fs-6" id="metricTax">₹{{ "{:,.2f}".format(total_tax) }}</span>
+                        </div>
+                    </div>
                 </div>
+                <div class="d-grid gap-2">
+                    <a href="{{ url_for('generate.download_excel', id=latest_gen.id) }}" class="btn btn-outline-primary" id="downloadExcelBtn">
+                        <i class="fas fa-file-excel me-2"></i>Download Excel
+                    </a>
+                    <a href="{{ url_for('generate.download_json', id=latest_gen.id) }}" class="btn btn-outline-info" id="downloadJsonBtn">
+                        <i class="fas fa-file-code me-2"></i>Download JSON
+                    </a>
+                </div>
+                {% else %}
+                <div class="row g-2 mb-3 text-center">
+                    <div class="col-4">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">Invoices</small>
+                            <span class="fw-bold fs-5" id="metricInvoices">0</span>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">B2B</small>
+                            <span class="fw-bold fs-5" id="metricB2B">0</span>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">B2CS</small>
+                            <span class="fw-bold fs-5" id="metricB2CS">0</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">Taxable Value</small>
+                            <span class="fw-bold fs-6" id="metricTaxable">₹0.00</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">Total Tax</small>
+                            <span class="fw-bold fs-6" id="metricTax">₹0.00</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="d-grid gap-2">
+                    <a href="#" class="btn btn-outline-primary" id="downloadExcelBtn">
+                        <i class="fas fa-file-excel me-2"></i>Download Excel
+                    </a>
+                    <a href="#" class="btn btn-outline-info" id="downloadJsonBtn">
+                        <i class="fas fa-file-code me-2"></i>Download JSON
+                    </a>
+                </div>
+                {% endif %}
             </div>
         </div>
-        {% if generations %}
-        <div class="card shadow mt-3">
+
+        {% if generations and generations|length > 0 %}
+        <div class="card shadow">
             <div class="card-header bg-white">
                 <h6 class="mb-0 fw-bold">Recent Generations</h6>
             </div>

@@ -604,6 +604,7 @@ def test_adversarial_boundary_decimal_serialization(app, db, audit_adversarial_e
 # Challenge 5: Offline / Non-Request Context & Sizing Boundary Safety
 # =========================================================================
 
+@pytest.mark.no_request_context
 def test_adversarial_request_context_safety_and_ip_boundaries(app, db, audit_adversarial_env):
     """Stress-test audit logging outside request context (CLI/cron) and with extreme field lengths."""
     # Sub-test 5A: Standalone execution with zero request context

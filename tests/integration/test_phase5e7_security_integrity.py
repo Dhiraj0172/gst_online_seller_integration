@@ -423,6 +423,24 @@ def test_19_service_gate_allows_generation_on_warnings_only(env5e7, app):
         assert res.reconciliation_report['status'] == 'WARNING'
 
 
+def test_service_gate_fails_closed_when_reconciliation_missing_and_lookup_fails(env5e7, app):
+    """Missing reconciliation report causes a lookup. If lookup fails, generation must fail closed."""
+    with app.app_context():
+        with patch('app.services.reconciliation_service.run_full_reconciliation', side_effect=Exception("DB Error")):
+            with pytest.raises(GenerationBlockedError) as exc_info:
+                generate_gstr1(str(env5e7['profile_id']), '012025')
+            assert "Failed to obtain authoritative reconciliation state" in str(exc_info.value)
+
+
+def test_service_gate_fails_closed_when_reconciliation_lookup_returns_none(env5e7, app):
+    """Missing reconciliation report causes a lookup. If lookup returns None, generation must fail closed."""
+    with app.app_context():
+        with patch('app.services.reconciliation_service.run_full_reconciliation', return_value=None):
+            with pytest.raises(GenerationBlockedError) as exc_info:
+                generate_gstr1(str(env5e7['profile_id']), '012025')
+            assert "Failed to obtain authoritative reconciliation state: returned None" in str(exc_info.value)
+
+
 # ---------------------------------------------------------------------------
 # Scope 7: Route Integration & Download Gate Safety
 # ---------------------------------------------------------------------------

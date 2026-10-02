@@ -162,7 +162,7 @@ def test_adv_01_total_b2b_strictly_counts_invoices_not_items_or_b2cs(app, db, ad
 
         _db.session.commit()
 
-        res = generate_gstr1(str(profile_id), period)
+        res = generate_gstr1(str(profile_id), period, reconciliation_report={'status': 'SUCCESS'})
 
         # Total B2B must be EXACTLY 2 (2 distinct invoices), NOT 5 (line items), NOT 7, NOT 10
         assert res.stats['total_b2b'] == 2, f"Expected 2 B2B invoices, got {res.stats['total_b2b']}"
@@ -328,7 +328,7 @@ def test_adv_02_stats_computes_all_11_counts_correctly(app, db, adversarial_env)
 
         _db.session.commit()
 
-        res = generate_gstr1(str(profile_id), period, include_hsn=True)
+        res = generate_gstr1(str(profile_id), period, include_hsn=True, reconciliation_report={'status': 'SUCCESS'})
         stats = res.stats
 
         # Check all required keys exist
@@ -420,7 +420,7 @@ def test_adv_03_tax_totals_sum_accurately_without_floating_point_drift(app, db, 
 
         _db.session.commit()
 
-        res = generate_gstr1(str(profile_id), period)
+        res = generate_gstr1(str(profile_id), period, reconciliation_report={'status': 'SUCCESS'})
         stats = res.stats
 
         # 100 * 100.33 = 10033.00
@@ -490,7 +490,7 @@ def test_adv_04_include_hsn_false_omits_hsn_from_excel_and_passes_validator(app,
         _db.session.commit()
 
         # Run with include_hsn=False
-        res = generate_gstr1(str(profile_id), period, include_hsn=False)
+        res = generate_gstr1(str(profile_id), period, include_hsn=False, reconciliation_report={'status': 'SUCCESS'})
 
         # 1. Check stats
         assert res.stats['total_hsn_b2b'] == 0
@@ -586,7 +586,7 @@ def test_adv_05_include_hsn_true_summary_matches_item_level_taxes(app, db, adver
         _db.session.commit()
 
         # Run with include_hsn=True
-        res = generate_gstr1(str(profile_id), period, include_hsn=True)
+        res = generate_gstr1(str(profile_id), period, include_hsn=True, reconciliation_report={'status': 'SUCCESS'})
 
         with open(res.json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -706,7 +706,7 @@ def test_adv_07_persistence_handles_zero_transactions_without_null_pointer(app, 
         profile_id = adversarial_env['profile_id']
         period = '022025'
 
-        res = generate_gstr1(str(profile_id), period)
+        res = generate_gstr1(str(profile_id), period, reconciliation_report={'status': 'SUCCESS'})
         gen_rec = _save_generation_record(
             profile=profile,
             return_period=period,
@@ -849,7 +849,7 @@ def test_adv_09_may2025_separate_hsn_reporting_mode(app, db, adversarial_env):
         ))
         _db.session.commit()
 
-        res = generate_gstr1(str(profile_id), period, include_hsn=True)
+        res = generate_gstr1(str(profile_id), period, include_hsn=True, reconciliation_report={'status': 'SUCCESS'})
 
         assert res.stats['total_hsn_b2b'] == 1, f"Expected 1 B2B HSN, got {res.stats['total_hsn_b2b']}"
         assert res.stats['total_hsn_b2c'] == 1, f"Expected 1 B2C HSN, got {res.stats['total_hsn_b2c']}"
@@ -915,7 +915,7 @@ def test_adv_10_extreme_float_drift_b2cs_accumulation(app, db, adversarial_env):
             ))
         _db.session.commit()
 
-        res = generate_gstr1(str(profile_id), period)
+        res = generate_gstr1(str(profile_id), period, reconciliation_report={'status': 'SUCCESS'})
         stats = res.stats
 
         # 30 * 0.10 = 3.00, 30 * 0.01 = 0.30

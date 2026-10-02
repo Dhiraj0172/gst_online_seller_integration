@@ -38,32 +38,16 @@ from app.services.reconciliation_service import run_full_reconciliation
 
 def _invoke_generator(profile_id, return_period, include_hsn=True, financial_year=None, reconciliation_report=None, options=None):
     """Helper to invoke generate_gstr1 safely whether kwargs or options dict are used."""
-    opts = dict(options or {})
-    opts['include_hsn'] = include_hsn
-    if financial_year:
-        opts['financial_year'] = financial_year
-    if reconciliation_report:
-        opts['reconciliation_report'] = reconciliation_report
+    if not reconciliation_report:
+        reconciliation_report = {'status': 'SUCCESS'}
 
-    try:
-        return generate_gstr1(
-            str(profile_id),
-            return_period,
-            include_hsn=include_hsn,
-            financial_year=financial_year,
-            reconciliation_report=reconciliation_report,
-            options=opts
-        )
-    except TypeError:
-        try:
-            return generate_gstr1(
-                str(profile_id),
-                return_period,
-                options=opts,
-                financial_year=financial_year
-            )
-        except TypeError:
-            return generate_gstr1(str(profile_id), return_period)
+    return generate_gstr1(
+        str(profile_id),
+        return_period,
+        include_hsn=include_hsn,
+        financial_year=financial_year,
+        reconciliation_report=reconciliation_report
+    )
 
 
 @pytest.fixture

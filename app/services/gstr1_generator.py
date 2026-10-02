@@ -1237,28 +1237,12 @@ def generate_gstr1(
     db_session: Any = None,
     include_hsn: bool = True,
     financial_year: Optional[str] = None,
-    reconciliation_report: Optional[Dict[str, Any]] = None,
-    options: Optional[Dict[str, Any]] = None,
-    **kwargs
+    reconciliation_report: Optional[Dict[str, Any]] = None
 ) -> GenerationResult:
     """
     Main GSTR-1 generator service.
     Steps: load transactions -> reconcile -> generate Excel -> generate JSON -> validate output -> return
     """
-    options = dict(options or {})
-    if 'include_hsn' in options:
-        include_hsn = bool(options['include_hsn'])
-    if 'financial_year' in options and not financial_year:
-        financial_year = options['financial_year']
-    if 'reconciliation_report' in options and not reconciliation_report:
-        reconciliation_report = options['reconciliation_report']
-    if 'include_hsn' in kwargs:
-        include_hsn = bool(kwargs['include_hsn'])
-    if 'financial_year' in kwargs and not financial_year:
-        financial_year = kwargs['financial_year']
-    if 'reconciliation_report' in kwargs and not reconciliation_report:
-        reconciliation_report = kwargs['reconciliation_report']
-
     initial_recon_report = reconciliation_report
     generation_id = str(uuid.uuid4())
 
@@ -1282,13 +1266,15 @@ def generate_gstr1(
         try:
             from app.services.reconciliation_service import run_full_reconciliation
             recon_obj = run_full_reconciliation(int(profile_id), return_period)
+            if recon_obj is None:
+                raise GenerationBlockedError("Failed to obtain authoritative reconciliation state: returned None")
             reconciliation_report = recon_obj.to_dict() if hasattr(recon_obj, 'to_dict') else recon_obj
-        except Exception:
-            reconciliation_report = {
-                "status": "SUCCESS",
-                "message": "Reconciliation passed. No critical errors found.",
-                "differences": []
-            }
+            if reconciliation_report is None:
+                raise GenerationBlockedError("Failed to obtain authoritative reconciliation state: no valid dictionary")
+        except GenerationBlockedError:
+            raise
+        except Exception as e:
+            raise GenerationBlockedError(f"Failed to obtain authoritative reconciliation state: {str(e)}")
 
     # Service-layer reconciliation gate check
     is_blocked = False

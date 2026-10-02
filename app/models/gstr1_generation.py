@@ -12,6 +12,7 @@ class GSTR1Generation(db.Model):
     profile_id = db.Column(db.Integer, db.ForeignKey('gst_profiles.id'), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     return_period = db.Column(db.String(6), index=True, nullable=False) # MMYYYY
+    financial_year = db.Column(db.String(9))
     
     generation_status = db.Column(db.String(20), nullable=False)
     generation_started_at = db.Column(db.DateTime)
@@ -35,6 +36,7 @@ class GSTR1Generation(db.Model):
     total_sgst = db.Column(db.Numeric(15, 2), default=Decimal('0.00'))
     total_igst = db.Column(db.Numeric(15, 2), default=Decimal('0.00'))
     total_cess = db.Column(db.Numeric(15, 2), default=Decimal('0.00'))
+    total_tax = db.Column(db.Numeric(15, 2), default=Decimal('0.00'))
     
     validation_passed = db.Column(db.Boolean, default=False)
     validation_errors = db.Column(db.Text) # JSON string

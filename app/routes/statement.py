@@ -5,7 +5,7 @@ from flask_login import current_user, login_required
 from sqlalchemy import func
 
 from app.extensions import db
-from app.models import AuditLog, GSTProfile, ImportHistory, Transaction
+from app.models import AuditLog, GSTProfile, ImportHistory, Transaction, GSTR1Generation, TCSReconciliation
 from app.services.validation_service import get_pre_filing_review, get_validation_issues
 from app.utils.csv_utils import sanitize_csv_value
 from . import statement_bp
@@ -570,3 +570,145 @@ def export_section(section):
         mimetype="text/csv",
         headers={"Content-disposition": f"attachment; filename={section}.csv"},
     )
+
+
+@statement_bp.route('/statement/audit-trail')
+@login_required
+def audit_trail():
+    profile_id = get_active_profile_id()
+    active_profile = GSTProfile.query.filter_by(id=profile_id, user_id=current_user.id).first() if profile_id else None
+
+    # Base query strictly scoped to current_user
+    query = AuditLog.query.filter_by(user_id=current_user.id)
+
+    entity_type = request.args.get('entity_type', '').strip()
+    action = request.args.get('action', '').strip()
+    return_period = request.args.get('return_period', '').strip()
+    start_date_str = request.args.get('start_date', '').strip()
+    end_date_str = request.args.get('end_date', '').strip()
+
+    if entity_type:
+        query = query.filter(AuditLog.entity_type == entity_type)
+
+    if action:
+        query = query.filter(AuditLog.action == action.upper())
+
+    if profile_id:
+        gen_ids = db.session.query(GSTR1Generation.id).filter_by(profile_id=profile_id)
+        tx_ids = db.session.query(Transaction.id).filter_by(profile_id=profile_id)
+        tcs_ids = db.session.query(TCSReconciliation.id).filter_by(profile_id=profile_id)
+
+        profile_condition = (
+            (AuditLog.entity_type == 'GSTR1Generation') & (AuditLog.entity_id.in_(gen_ids)) |
+            (AuditLog.entity_type == 'Transaction') & (AuditLog.entity_id.in_(tx_ids)) |
+            (AuditLog.entity_type == 'TCSReconciliation') & (AuditLog.entity_id.in_(tcs_ids)) |
+            (AuditLog.entity_type == 'GSTProfile') & (AuditLog.entity_id == profile_id)
+        )
+        query = query.filter(profile_condition)
+
+    if return_period:
+        rp_gen_ids = db.session.query(GSTR1Generation.id).filter(
+            GSTR1Generation.profile_id == profile_id if profile_id else True,
+            GSTR1Generation.return_period == return_period
+        )
+        rp_tx_ids = (
+            db.session.query(Transaction.id)
+            .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
+            .filter(
+                Transaction.profile_id == profile_id if profile_id else True,
+                ImportHistory.return_period == return_period
+            )
+        )
+        rp_tcs_ids = db.session.query(TCSReconciliation.id).filter(
+            TCSReconciliation.profile_id == profile_id if profile_id else True,
+            TCSReconciliation.return_period == return_period
+        )
+
+        rp_condition = (
+            (AuditLog.entity_type == 'GSTR1Generation') & (AuditLog.entity_id.in_(rp_gen_ids)) |
+            (AuditLog.entity_type == 'Transaction') & (AuditLog.entity_id.in_(rp_tx_ids)) |
+            (AuditLog.entity_type == 'TCSReconciliation') & (AuditLog.entity_id.in_(rp_tcs_ids)) |
+            (AuditLog.reason.ilike(f'%{return_period}%')) |
+            (AuditLog.new_value.ilike(f'%{return_period}%'))
+        )
+        query = query.filter(rp_condition)
+
+    if start_date_str:
+        try:
+            from datetime import datetime as dt
+            sd = dt.strptime(start_date_str, '%Y-%m-%d')
+            query = query.filter(AuditLog.timestamp >= sd)
+        except ValueError:
+            pass
+
+    if end_date_str:
+        try:
+            from datetime import datetime as dt, time as dt_time
+            ed = dt.combine(dt.strptime(end_date_str, '%Y-%m-%d').date(), dt_time.max)
+            query = query.filter(AuditLog.timestamp <= ed)
+        except ValueError:
+            pass
+
+    if request.args.get('export') == 'csv' or request.path.endswith('/export'):
+        all_logs = query.order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).all()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['ID', 'Timestamp', 'Action', 'Entity Type', 'Entity ID', 'Field Name', 'Old Value', 'New Value', 'Reason', 'IP Address'])
+        for log in all_logs:
+            writer.writerow([
+                log.id,
+                log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else '',
+                sanitize_csv_value(log.action),
+                sanitize_csv_value(log.entity_type),
+                log.entity_id,
+                sanitize_csv_value(log.field_name or ''),
+                sanitize_csv_value(log.old_value or ''),
+                sanitize_csv_value(log.new_value or ''),
+                sanitize_csv_value(log.reason or ''),
+                sanitize_csv_value(log.ip_address or ''),
+            ])
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment;filename=audit_trail.csv"}
+        )
+
+    available_periods = []
+    if profile_id:
+        rows = (
+            db.session.query(ImportHistory.return_period)
+            .filter_by(profile_id=profile_id)
+            .distinct()
+            .order_by(ImportHistory.return_period.desc())
+            .all()
+        )
+        available_periods = [r[0] for r in rows if r[0]]
+
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 25, type=int)
+    paginated = query.order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+
+    current_filters = {
+        'entity_type': entity_type,
+        'action': action,
+        'return_period': return_period,
+        'start_date': start_date_str,
+        'end_date': end_date_str,
+    }
+
+    return render_template(
+        'audit_trail.html',
+        logs=paginated.items,
+        pagination=paginated,
+        active_profile=active_profile,
+        available_periods=available_periods,
+        current_filters=current_filters
+    )
+
+
+@statement_bp.route('/statement/audit-trail/export')
+@login_required
+def export_audit_trail():
+    return audit_trail()

@@ -1,25 +1,76 @@
 {% extends 'base.html' %}
 {% block title %}Downloads - GST Online Seller{% endblock %}
 {% block content %}
-<h2 class="mb-4">Downloads</h2>
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Downloads Center</h2>
+    <a href="{{ url_for('generate.index') }}" class="btn btn-outline-success">
+        <i class="fas fa-file-export me-1"></i>Generate New Return
+    </a>
+</div>
+
 <div class="card shadow">
+    <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-bold">Generated Return Files</h5>
+    </div>
     <div class="card-body">
+        {% if generations and generations|length > 0 %}
         <div class="table-responsive">
-            <table class="table">
-                <thead>
+            <table class="table table-hover align-middle">
+                <thead class="table-light">
                     <tr>
-                        <th>Generated At</th>
-                        <th>Period</th>
-                        <th>Type</th>
-                        <th>Size</th>
-                        <th>Action</th>
+                        <th>Return Period</th>
+                        <th>Generation Date</th>
+                        <th class="text-center">Total Invoices</th>
+                        <th class="text-end">Total Taxable Value</th>
+                        <th class="text-end">Total Tax</th>
+                        <th class="text-center">Status</th>
+                        <th class="text-center">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr><td colspan="5" class="text-center">No downloads available</td></tr>
+                    {% for gen in generations %}
+                    {% set total_inv = (gen.total_b2b or 0) + (gen.total_b2cs or 0) + (gen.total_b2cl or 0) + (gen.total_cdnr or 0) + (gen.total_cdnur or 0) + (gen.total_nil or 0) + (gen.total_ecom or 0) %}
+                    {% set total_tax = (gen.total_cgst or 0) + (gen.total_sgst or 0) + (gen.total_igst or 0) + (gen.total_cess or 0) %}
+                    <tr>
+                        <td>
+                            <span class="badge bg-primary fs-6">{{ gen.return_period }}</span>
+                        </td>
+                        <td>{{ gen.created_at.strftime('%d-%m-%Y %H:%M') if gen.created_at else '-' }}</td>
+                        <td class="text-center fw-semibold">{{ total_inv }}</td>
+                        <td class="text-end">₹{{ "{:,.2f}".format(gen.total_taxable_value or 0) }}</td>
+                        <td class="text-end">₹{{ "{:,.2f}".format(total_tax) }}</td>
+                        <td class="text-center">
+                            <span class="badge {% if gen.generation_status == 'COMPLETED' %}bg-success{% elif gen.generation_status == 'FAILED' %}bg-danger{% else %}bg-secondary{% endif %}">
+                                {{ gen.generation_status }}
+                            </span>
+                        </td>
+                        <td class="text-center">
+                            <div class="btn-group" role="group">
+                                <a href="{{ url_for('generate.download_excel', id=gen.id) }}" class="btn btn-sm btn-outline-primary" title="Download Excel">
+                                    <i class="fas fa-file-excel me-1"></i>Excel
+                                </a>
+                                <a href="{{ url_for('generate.download_json', id=gen.id) }}" class="btn btn-sm btn-outline-info" title="Download JSON">
+                                    <i class="fas fa-file-code me-1"></i>JSON
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
                 </tbody>
             </table>
         </div>
+        {% else %}
+        <div class="text-center py-5">
+            <div class="mb-3">
+                <i class="fas fa-file-download fa-4x text-muted"></i>
+            </div>
+            <h5 class="text-muted">No Generated Returns Available</h5>
+            <p class="text-secondary mb-4">You have not generated any GSTR-1 return files yet. Head over to the GSTR-1 Generator to create return files for filing.</p>
+            <a href="{{ url_for('generate.index') }}" class="btn btn-primary">
+                <i class="fas fa-file-export me-1"></i>Go to GSTR-1 Generator
+            </a>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

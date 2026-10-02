@@ -69,15 +69,17 @@ $(document).ready(function () {
         }
     }
 
-    $('#generateBtn').on('click', function() {
-        const btn = $(this);
-        btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin me-2"></i>Generating...');
-        
-        // Simulate API call
+    $('#generateForm').on('submit', function () {
+        const btn = $('#generateBtn');
+        btn.html('<i class="fas fa-spinner fa-spin me-2"></i>Generating...');
         setTimeout(() => {
-            $('#resultCard').show();
-            btn.html('Generate Return Files').prop('disabled', false);
-        }, 2000);
+            btn.prop('disabled', true);
+        }, 0);
+    });
+
+    $('#generateBtn').on('click', function () {
+        const btn = $(this);
+        btn.html('<i class="fas fa-spinner fa-spin me-2"></i>Generating...');
     });
 });
 

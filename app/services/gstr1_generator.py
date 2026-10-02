@@ -14,6 +14,14 @@ from app.services.gst_rules import get_rules_for_period
 from app.utils.state_codes import resolve_pos_code
 
 
+class GenerationBlockedError(Exception):
+    """Raised when GSTR-1 generation is blocked due to critical reconciliation errors."""
+    def __init__(self, message: str = "Generation blocked due to critical reconciliation errors.", reconciliation_report: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.message = message
+        self.reconciliation_report = reconciliation_report
+
+
 class GenerationResult:
     def __init__(self, generation_id: str, excel_path: str, json_path: str, validation_result: ValidationResult, reconciliation_report: Dict[str, Any], stats: Dict[str, Any]):
         self.generation_id = generation_id
@@ -73,7 +81,12 @@ def _empty_gstr1_structure(return_period: str, gstin: str = "") -> Dict[str, Any
         "b2cs": [],
         "cdnr": [],
         "hsn": {"data": []},
-        "doc_issue": {"doc_det": []}
+        "doc_issue": {"doc_det": []},
+        "_stats_meta": {
+            "total_hsn_b2b": 0,
+            "total_hsn_b2c": 0,
+            "total_ecom": 0
+        }
     }
 
 
@@ -343,6 +356,16 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
         json_data["cdnura"] = cdnura_data
     if expa_groups:
         json_data["expa"] = list(expa_groups.values())
+
+    hsn_b2b_count = sum(1 for v in hsn_agg.values() if v.get("category") == "B2B")
+    hsn_b2c_count = sum(1 for v in hsn_agg.values() if v.get("category") != "B2B")
+    ecom_count = sum(1 for tx in transactions if getattr(tx, 'ecommerce_gstin', None))
+    json_data["_stats_meta"] = {
+        "total_hsn_b2b": hsn_b2b_count,
+        "total_hsn_b2c": hsn_b2c_count,
+        "total_ecom": ecom_count
+    }
+
     return json_data
 
 
@@ -1211,55 +1234,212 @@ def transform_for_excel(json_data: Dict[str, Any]) -> Dict[str, list]:
 def generate_gstr1(
     profile_id: str,
     return_period: str,
-    options: Optional[Dict[str, Any]] = None,
+    db_session: Any = None,
+    include_hsn: bool = True,
     financial_year: Optional[str] = None,
+    reconciliation_report: Optional[Dict[str, Any]] = None
 ) -> GenerationResult:
     """
     Main GSTR-1 generator service.
     Steps: load transactions -> reconcile -> generate Excel -> generate JSON -> validate output -> return
     """
-    options = dict(options or {})
-    if financial_year and 'financial_year' not in options:
-        options['financial_year'] = financial_year
+    initial_recon_report = reconciliation_report
     generation_id = str(uuid.uuid4())
 
     # 1. Load transactions
     json_data = load_transactions(profile_id, return_period)
+    _stats_meta = json_data.pop("_stats_meta", {})
 
-    # 2. Reconcile
-    reconciliation_report = {
-        "status": "SUCCESS",
-        "message": "Reconciliation passed. No critical errors found.",
-        "differences": []
-    }
+    # 2. Options handling (include_hsn)
+    if not include_hsn:
+        json_data["hsn"] = {"data": []}
+        if "hsnb2c" in json_data:
+            json_data["hsnb2c"] = {"data": []}
 
-    # Stats
-    b2b_invoices = sum(len(b.get("inv", [])) for b in json_data.get("b2b", []))
-    b2cs_invoices = len(json_data.get("b2cs", []))
-    total_txval = sum(itm.get("itm_det", {}).get("txval", 0) for b in json_data.get("b2b", []) for inv in b.get("inv", []) for itm in inv.get("itms", []))
-    total_txval += sum(b.get("txval", 0) for b in json_data.get("b2cs", []))
+    # 3. Reconciliation report
+    recon_obj = None
+    if reconciliation_report is not None:
+        if hasattr(reconciliation_report, 'to_dict'):
+            recon_obj = reconciliation_report
+            reconciliation_report = reconciliation_report.to_dict()
+    else:
+        try:
+            from app.services.reconciliation_service import run_full_reconciliation
+            recon_obj = run_full_reconciliation(int(profile_id), return_period)
+            if recon_obj is None:
+                raise GenerationBlockedError("Failed to obtain authoritative reconciliation state: returned None")
+            reconciliation_report = recon_obj.to_dict() if hasattr(recon_obj, 'to_dict') else recon_obj
+            if reconciliation_report is None:
+                raise GenerationBlockedError("Failed to obtain authoritative reconciliation state: no valid dictionary")
+        except GenerationBlockedError:
+            raise
+        except Exception as e:
+            raise GenerationBlockedError(f"Failed to obtain authoritative reconciliation state: {str(e)}")
+
+    # Service-layer reconciliation gate check
+    is_blocked = False
+
+    if recon_obj is not None:
+        is_blocked = getattr(recon_obj, 'is_generation_blocked', False)
+    if not is_blocked and isinstance(reconciliation_report, dict):
+        is_blocked = bool(
+            reconciliation_report.get('is_generation_blocked', False)
+            or reconciliation_report.get('status') == 'BLOCKED'
+            or (reconciliation_report.get('critical_failures', 0) > 0)
+        )
+    if is_blocked:
+        raise GenerationBlockedError(
+            f"GSTR-1 generation blocked: Reconciliation report has critical errors for profile {profile_id}, period {return_period}.",
+            reconciliation_report=reconciliation_report
+        )
+
+    # 4. Section invoice counts
+    total_b2b = sum(len(b.get("inv", [])) for b in json_data.get("b2b", [])) + sum(len(b.get("inv", [])) for b in json_data.get("b2ba", []))
+    total_b2cs = len(json_data.get("b2cs", [])) + len(json_data.get("b2csa", []))
+    total_b2cl = sum(len(b.get("inv", [])) for b in json_data.get("b2cl", [])) + sum(len(b.get("inv", [])) for b in json_data.get("b2cla", []))
+    total_cdnr = sum(len(b.get("nt", [])) for b in json_data.get("cdnr", [])) + sum(len(b.get("nt", [])) for b in json_data.get("cdnra", []))
+    total_cdnur = len(json_data.get("cdnur", [])) + len(json_data.get("cdnura", []))
+    total_exp = sum(len(b.get("inv", [])) for b in json_data.get("exp", [])) + sum(len(b.get("inv", [])) for b in json_data.get("expa", []))
+
+    nil_section = json_data.get("nil", {})
+    if isinstance(nil_section, dict):
+        nil_rows = nil_section.get("inv", [])
+    elif isinstance(nil_section, list):
+        nil_rows = nil_section
+    else:
+        nil_rows = []
+    total_nil = sum(1 for row in nil_rows if (row.get("nil_amt", 0) or 0) > 0 or (row.get("expt_amt", 0) or 0) > 0 or (row.get("ngsup_amt", 0) or 0) > 0)
+
+    total_invoices = total_b2b + total_b2cs + total_b2cl + total_cdnr + total_cdnur + total_exp + total_nil
+
+    if include_hsn:
+        total_hsn_b2b = _stats_meta.get("total_hsn_b2b", 0)
+        total_hsn_b2c = _stats_meta.get("total_hsn_b2c", 0)
+        if "b2c_data" in json_data.get("hsn", {}):
+            total_hsn_b2b = len(json_data["hsn"].get("data", []))
+            total_hsn_b2c = len(json_data["hsn"].get("b2c_data", []))
+    else:
+        total_hsn_b2b = 0
+        total_hsn_b2c = 0
+
+    total_ecom = _stats_meta.get("total_ecom", 0)
+
+    # 5. Tax totals calculation
+    total_taxable_value = Decimal('0.00')
+    total_cgst = Decimal('0.00')
+    total_sgst = Decimal('0.00')
+    total_igst = Decimal('0.00')
+    total_cess = Decimal('0.00')
+
+    # B2B & B2BA
+    for tbl in ("b2b", "b2ba"):
+        for b in json_data.get(tbl, []):
+            for inv in b.get("inv", []):
+                for itm in inv.get("itms", []):
+                    d = itm.get("itm_det", {})
+                    total_taxable_value += Decimal(str(d.get("txval", 0)))
+                    total_cgst += Decimal(str(d.get("camt", 0)))
+                    total_sgst += Decimal(str(d.get("samt", 0)))
+                    total_igst += Decimal(str(d.get("iamt", 0)))
+                    total_cess += Decimal(str(d.get("csamt", 0)))
+
+    # B2CS & B2CSA
+    for tbl in ("b2cs", "b2csa"):
+        for row in json_data.get(tbl, []):
+            total_taxable_value += Decimal(str(row.get("txval", 0)))
+            total_cgst += Decimal(str(row.get("camt", 0)))
+            total_sgst += Decimal(str(row.get("samt", 0)))
+            total_igst += Decimal(str(row.get("iamt", 0)))
+            total_cess += Decimal(str(row.get("csamt", 0)))
+
+    # B2CL & B2CLA
+    for tbl in ("b2cl", "b2cla"):
+        for b in json_data.get(tbl, []):
+            for inv in b.get("inv", []):
+                for itm in inv.get("itms", []):
+                    d = itm.get("itm_det", {})
+                    total_taxable_value += Decimal(str(d.get("txval", 0)))
+                    total_igst += Decimal(str(d.get("iamt", 0)))
+                    total_cess += Decimal(str(d.get("csamt", 0)))
+
+    # CDNR & CDNRA
+    for tbl in ("cdnr", "cdnra"):
+        for b in json_data.get(tbl, []):
+            for nt in b.get("nt", []):
+                for itm in nt.get("itms", []):
+                    d = itm.get("itm_det", {})
+                    total_taxable_value += Decimal(str(d.get("txval", 0)))
+                    total_cgst += Decimal(str(d.get("camt", 0)))
+                    total_sgst += Decimal(str(d.get("samt", 0)))
+                    total_igst += Decimal(str(d.get("iamt", 0)))
+                    total_cess += Decimal(str(d.get("csamt", 0)))
+
+    # CDNUR & CDNURA
+    for tbl in ("cdnur", "cdnura"):
+        for nt in json_data.get(tbl, []):
+            for itm in nt.get("itms", []):
+                d = itm.get("itm_det", {})
+                total_taxable_value += Decimal(str(d.get("txval", 0)))
+                total_cgst += Decimal(str(d.get("camt", 0)))
+                total_sgst += Decimal(str(d.get("samt", 0)))
+                total_igst += Decimal(str(d.get("iamt", 0)))
+                total_cess += Decimal(str(d.get("csamt", 0)))
+
+    # EXP & EXPA
+    for tbl in ("exp", "expa"):
+        for b in json_data.get(tbl, []):
+            for inv in b.get("inv", []):
+                for itm in inv.get("itms", []):
+                    d = itm.get("itm_det", {})
+                    total_taxable_value += Decimal(str(d.get("txval", 0)))
+                    total_igst += Decimal(str(d.get("iamt", 0)))
+                    total_cess += Decimal(str(d.get("csamt", 0)))
+
+    # NIL
+    for row in nil_rows:
+        nil_val = Decimal(str(row.get("nil_amt", 0))) + Decimal(str(row.get("expt_amt", 0))) + Decimal(str(row.get("ngsup_amt", 0)))
+        total_taxable_value += nil_val
+
+    total_tax = total_cgst + total_sgst + total_igst + total_cess
 
     stats = {
-        "total_invoices": b2b_invoices + b2cs_invoices,
-        "total_taxable_value": total_txval,
-        "total_tax": json_data.get("gt", 0) - total_txval if json_data.get("gt", 0) > total_txval else 0
+        "total_b2b": total_b2b,
+        "total_b2cs": total_b2cs,
+        "total_b2cl": total_b2cl,
+        "total_cdnr": total_cdnr,
+        "total_cdnur": total_cdnur,
+        "total_exp": total_exp,
+        "total_nil": total_nil,
+        "total_hsn_b2b": total_hsn_b2b,
+        "total_hsn_b2c": total_hsn_b2c,
+        "total_ecom": total_ecom,
+        "total_invoices": total_invoices,
+        "total_taxable_value": float(total_taxable_value),
+        "total_cgst": float(total_cgst),
+        "total_sgst": float(total_sgst),
+        "total_igst": float(total_igst),
+        "total_cess": float(total_cess),
+        "total_tax": float(total_tax),
     }
 
-    # 3. Output directories
+    # 6. Output directories
     output_dir = os.path.join(os.path.dirname(__file__), "..", "..", "exports", generation_id)
     os.makedirs(output_dir, exist_ok=True)
 
     json_path = os.path.join(output_dir, f"GSTR1_{profile_id}_{return_period}.json")
     excel_path = os.path.join(output_dir, f"GSTR1_{profile_id}_{return_period}.xlsx")
 
-    # 4. Generate JSON
+    # 7. Generate JSON
     generate_gstr1_json(json_data, json_path)
 
-    # 5. Generate Excel
+    # 8. Generate Excel
     excel_data = transform_for_excel(json_data)
+    if not include_hsn:
+        excel_data["hsn"] = []
+        excel_data["hsnb2c"] = []
     generate_gstr1_excel(excel_data, excel_path)
 
-    # 6. Validate output
+    # 9. Validate output
     with open(json_path, "r", encoding="utf-8") as f:
         json_str = f.read()
     validation_result = GSTR1Validator.validate_gstr1_json(json_str)

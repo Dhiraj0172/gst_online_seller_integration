@@ -58,6 +58,7 @@ __all__ = [
     'validate_file',
     'read_chunks',
     'process_import',
+    'reprocess_import',
     '_create_transaction_from_normalized',
     'ImportResult',
     'ImportRow',
@@ -788,3 +789,78 @@ def _create_transaction_from_normalized(
         gstr1_table=gstr1_table_map.get(classification, 'unknown'),
         source_metadata=json.dumps(normalized.get('source_metadata', {}), default=str),
     )
+def reprocess_import(
+    import_history_id: int,
+    profile_id: int,
+    user_id: int,
+) -> ImportProcessingResult:
+    """Reprocess an existing import safely."""
+    from app.models.gstr1_generation import GSTR1Generation
+
+    # 1. Resolve and check original import
+    original_import = db.session.get(ImportHistory, import_history_id)
+    if not original_import or original_import.profile_id != profile_id:
+        result = ImportProcessingResult()
+        result.status = 'FAILED'
+        result.errors.append("Original import not found or unauthorized.")
+        return result
+
+    # 4. Check generation freeze BEFORE mutating
+    freeze = db.session.query(GSTR1Generation).filter_by(
+        profile_id=profile_id,
+        return_period=original_import.return_period,
+        generation_status='COMPLETED',
+        validation_passed=True
+    ).first()
+    if freeze:
+        result = ImportProcessingResult()
+        result.status = 'FAILED'
+        result.errors.append("Cannot reprocess: A finalized GSTR-1 generation exists for this return period.")
+        return result
+
+    # 8. Create NEW ImportHistory
+    new_import = ImportHistory(
+        user_id=user_id,
+        profile_id=profile_id,
+        file_name=original_import.file_name,
+        original_file_name=original_import.original_file_name,
+        file_hash=original_import.file_hash,
+        file_size=original_import.file_size,
+        mime_type=original_import.mime_type,
+        platform_name=original_import.platform_name,
+        return_period=original_import.return_period,
+        financial_year=original_import.financial_year,
+        raw_file_path=original_import.raw_file_path,
+        processing_status='PROCESSING',
+        processing_started_at=datetime.utcnow(),
+        is_reprocessed=True,
+        parent_import_id=original_import.id
+    )
+    db.session.add(new_import)
+    db.session.flush()
+    new_id = new_import.id
+
+    # 6. Soft-delete ONLY active Transactions belonging to the source ImportHistory
+    db.session.query(Transaction).filter_by(
+        import_history_id=original_import.id,
+        is_deleted=False
+    ).update({
+        'is_deleted': True,
+        'deleted_at': datetime.utcnow(),
+        'deleted_by': user_id
+    }, synchronize_session=False)
+    db.session.flush()
+
+    # 11. Re-run import pipeline
+    res = process_import(
+        file_path=original_import.raw_file_path,
+        profile_id=profile_id,
+        platform_name=original_import.platform_name,
+        user_id=user_id,
+        return_period=original_import.return_period,
+        financial_year=original_import.financial_year,
+        allow_duplicate_file=True,
+        import_history_id=new_id
+    )
+
+    return res

@@ -267,7 +267,23 @@ def reprocess(id):
     if not profile:
         return redirect(url_for('profile.list_profiles'))
     import_rec = ImportHistory.query.filter_by(id=id, profile_id=profile.id).first_or_404()
-    flash(f'Import {import_rec.file_name} reprocessed successfully', 'success')
+    
+    from app.services.import_service import reprocess_import
+    from app.services.audit_service import log_import_audit
+
+    try:
+        res = reprocess_import(id, profile.id, current_user.id)
+        if res.status == 'SUCCESS' or res.status == 'COMPLETED':
+            flash(f'Import {import_rec.file_name} reprocessed successfully.', 'success')
+            log_import_audit(current_user.id, res.import_history_id or id, action='REPROCESS', commit=True)
+        else:
+            err_msg = res.errors[0] if res.errors else 'Unknown error'
+            flash(f'Reprocess failed: {err_msg}', 'danger')
+            log_import_audit(current_user.id, res.import_history_id or id, action='REPROCESS', reason=f"FAILED: {err_msg}", commit=True)
+    except Exception as e:
+        flash(f'An unexpected error occurred during reprocess: {str(e)}', 'danger')
+        log_import_audit(current_user.id, id, action='REPROCESS', reason=f"FAILED: {str(e)}", commit=True)
+
     return redirect(url_for('imports.history'))
 
 @import_bp.route('/import/<int:id>/download-original')

@@ -555,10 +555,18 @@ class TestPhase5DBidirectionalRoundTripAndReconciliation:
         assert import_res.total_rows == 25
 
         # Step 2: Generate GSTR-1
+        clean_report = {
+            'status': 'SUCCESS',
+            'is_generation_blocked': False,
+            'critical_failures': 0,
+            'warnings': 0,
+            'differences': []
+        }
         gen_res = generate_gstr1(
             profile_id=seller_context["profile_id"],
             return_period=seller_context["return_period"],
             financial_year=seller_context["financial_year"],
+            reconciliation_report=clean_report
         )
 
         assert os.path.exists(gen_res.excel_path), f"Excel output missing: {gen_res.excel_path}"

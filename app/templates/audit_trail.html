@@ -1,0 +1,192 @@
+{% extends 'base.html' %}
+{% block title %}Audit Trail - GST Online Seller{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2>Audit Trail</h2>
+        <p class="text-muted mb-0">Compliance audit log tracking critical entity changes and GSTR-1 lifecycle events.</p>
+    </div>
+    <div>
+        <a href="{{ url_for('statement.export_audit_trail', entity_type=current_filters.entity_type, action=current_filters.action, return_period=current_filters.return_period, start_date=current_filters.start_date, end_date=current_filters.end_date) }}" class="btn btn-outline-success">
+            <i class="fas fa-file-csv me-1"></i> Export CSV
+        </a>
+    </div>
+</div>
+
+<!-- Filter Card -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-white py-3">
+        <h6 class="mb-0 fw-bold"><i class="fas fa-filter me-2 text-primary"></i>Filter Audit Records</h6>
+    </div>
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('statement.audit_trail') }}" class="row g-3">
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold">Entity Type</label>
+                <select name="entity_type" class="form-select form-select-sm">
+                    <option value="">All Entities</option>
+                    <option value="GSTR1Generation" {% if current_filters.entity_type == 'GSTR1Generation' %}selected{% endif %}>GSTR1Generation</option>
+                    <option value="Transaction" {% if current_filters.entity_type == 'Transaction' %}selected{% endif %}>Transaction</option>
+                    <option value="TCSReconciliation" {% if current_filters.entity_type == 'TCSReconciliation' %}selected{% endif %}>TCSReconciliation</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold">Action</label>
+                <select name="action" class="form-select form-select-sm">
+                    <option value="">All Actions</option>
+                    <option value="CREATE" {% if current_filters.action == 'CREATE' %}selected{% endif %}>CREATE</option>
+                    <option value="REGENERATE" {% if current_filters.action == 'REGENERATE' %}selected{% endif %}>REGENERATE</option>
+                    <option value="DOWNLOAD" {% if current_filters.action == 'DOWNLOAD' %}selected{% endif %}>DOWNLOAD</option>
+                    <option value="UPDATE" {% if current_filters.action == 'UPDATE' %}selected{% endif %}>UPDATE</option>
+                    <option value="DELETE" {% if current_filters.action == 'DELETE' %}selected{% endif %}>DELETE</option>
+                    <option value="TCS_ADJUSTMENT" {% if current_filters.action == 'TCS_ADJUSTMENT' %}selected{% endif %}>TCS_ADJUSTMENT</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold">Return Period</label>
+                <select name="return_period" class="form-select form-select-sm">
+                    <option value="">All Periods</option>
+                    {% for p in available_periods %}
+                    <option value="{{ p }}" {% if current_filters.return_period == p %}selected{% endif %}>{{ p }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold">From Date</label>
+                <input type="date" name="start_date" class="form-control form-control-sm" value="{{ current_filters.start_date|default('') }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small fw-semibold">To Date</label>
+                <input type="date" name="end_date" class="form-control form-control-sm" value="{{ current_filters.end_date|default('') }}">
+            </div>
+            <div class="col-md-2 d-flex align-items-end gap-2">
+                <button type="submit" class="btn btn-sm btn-primary flex-fill">
+                    <i class="fas fa-search me-1"></i> Apply
+                </button>
+                <a href="{{ url_for('statement.audit_trail') }}" class="btn btn-sm btn-outline-secondary" title="Reset Filters">
+                    <i class="fas fa-undo"></i>
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Audit Log Table -->
+<div class="card shadow-sm">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <h6 class="mb-0 fw-bold">Audit History</h6>
+        {% if pagination %}
+        <span class="badge bg-light text-dark border">Total Records: {{ pagination.total }}</span>
+        {% endif %}
+    </div>
+    <div class="card-body p-0">
+        {% if logs and logs|length > 0 %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="ps-3" style="width: 170px;">Timestamp</th>
+                        <th style="width: 140px;">Action</th>
+                        <th style="width: 160px;">Entity</th>
+                        <th class="text-center" style="width: 100px;">Entity ID</th>
+                        <th>Summary / Reason</th>
+                        <th style="width: 140px;">IP Address</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td class="ps-3 text-nowrap font-monospace small">
+                            {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else '-' }}
+                        </td>
+                        <td>
+                            {% if log.action == 'CREATE' %}
+                            <span class="badge bg-success">CREATE</span>
+                            {% elif log.action == 'REGENERATE' %}
+                            <span class="badge bg-info text-dark">REGENERATE</span>
+                            {% elif log.action == 'DOWNLOAD' %}
+                            <span class="badge bg-primary">DOWNLOAD</span>
+                            {% elif log.action == 'UPDATE' %}
+                            <span class="badge bg-warning text-dark">UPDATE</span>
+                            {% elif log.action == 'DELETE' %}
+                            <span class="badge bg-danger">DELETE</span>
+                            {% elif log.action == 'TCS_ADJUSTMENT' %}
+                            <span class="badge bg-secondary">TCS_ADJUSTMENT</span>
+                            {% else %}
+                            <span class="badge bg-dark">{{ log.action }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="fw-semibold">{{ log.entity_type }}</span>
+                            {% if log.field_name %}
+                            <small class="text-muted d-block font-monospace">field: {{ log.field_name }}</small>
+                            {% endif %}
+                        </td>
+                        <td class="text-center font-monospace small">{{ log.entity_id }}</td>
+                        <td>
+                            <div class="text-break">{{ log.reason or '-' }}</div>
+                            {% if log.old_value or log.new_value %}
+                            <details class="mt-1 small">
+                                <summary class="text-muted cursor-pointer">View change values</summary>
+                                <div class="p-2 mt-1 bg-light rounded border font-monospace text-break" style="font-size: 0.75rem;">
+                                    {% if log.old_value %}
+                                    <div class="text-danger mb-1"><strong>Old:</strong> {{ log.old_value }}</div>
+                                    {% endif %}
+                                    {% if log.new_value %}
+                                    <div class="text-success"><strong>New:</strong> {{ log.new_value }}</div>
+                                    {% endif %}
+                                </div>
+                            </details>
+                            {% endif %}
+                        </td>
+                        <td class="font-monospace small text-muted">{{ log.ip_address or '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if pagination and pagination.pages > 1 %}
+        <div class="d-flex justify-content-between align-items-center p-3 border-top">
+            <small class="text-muted">
+                Showing page {{ pagination.page }} of {{ pagination.pages }}
+            </small>
+            <nav aria-label="Audit pagination">
+                <ul class="pagination pagination-sm mb-0">
+                    <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+                        <a class="page-link" href="{{ url_for('statement.audit_trail', page=pagination.prev_num, entity_type=current_filters.entity_type, action=current_filters.action, return_period=current_filters.return_period, start_date=current_filters.start_date, end_date=current_filters.end_date) }}">Previous</a>
+                    </li>
+                    {% for p in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+                        {% if p %}
+                            <li class="page-item {% if p == pagination.page %}active{% endif %}">
+                                <a class="page-link" href="{{ url_for('statement.audit_trail', page=p, entity_type=current_filters.entity_type, action=current_filters.action, return_period=current_filters.return_period, start_date=current_filters.start_date, end_date=current_filters.end_date) }}">{{ p }}</a>
+                            </li>
+                        {% else %}
+                            <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+                        {% endif %}
+                    {% endfor %}
+                    <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+                        <a class="page-link" href="{{ url_for('statement.audit_trail', page=pagination.next_num, entity_type=current_filters.entity_type, action=current_filters.action, return_period=current_filters.return_period, start_date=current_filters.start_date, end_date=current_filters.end_date) }}">Next</a>
+                    </li>
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+
+        {% else %}
+        <div class="text-center py-5">
+            <div class="mb-3">
+                <i class="fas fa-clipboard-check fa-4x text-muted"></i>
+            </div>
+            <h5 class="text-muted">No Audit Records Found</h5>
+            <p class="text-secondary mb-3">No audit records match your selected filter criteria, or no audit events have occurred yet.</p>
+            {% if current_filters.entity_type or current_filters.action or current_filters.return_period or current_filters.start_date or current_filters.end_date %}
+            <a href="{{ url_for('statement.audit_trail') }}" class="btn btn-sm btn-outline-primary">
+                <i class="fas fa-undo me-1"></i> Clear Filters
+            </a>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -268,7 +268,7 @@ def test_adversarial_blocked_period_zero_audit_log_matrix(client, audit_adversar
         {'return_period': '112024', 'force': 'true'},
         {'return_period': '112024', 'bypass': 'true'},
         {'return_period': '112024', 'override': 'true'},
-        {'return_period': '112024', 'enforce_gate': '0'},
+
         {'return_period': '112024', 'skip_reconciliation': '1'},
     ]
 
@@ -290,7 +290,7 @@ def test_adversarial_blocked_period_zero_audit_log_matrix(client, audit_adversar
         {'return_period': '112024', 'force': True},
         {'return_period': '112024', 'bypass': True},
         {'return_period': '112024', 'override': True},
-        {'return_period': '112024', 'enforce_gate': False},
+
         {'return_period': '112024', 'skip_reconciliation': True},
     ]
 

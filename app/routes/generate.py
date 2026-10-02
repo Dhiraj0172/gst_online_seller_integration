@@ -227,7 +227,7 @@ def download_excel(id):
         )
     # If not on disk, regenerate on the fly
     try:
-        gen_result = generate_gstr1(str(profile.id), gen.return_period, enforce_gate=True)
+        gen_result = generate_gstr1(str(profile.id), gen.return_period)
         return send_file(
             gen_result.excel_path,
             as_attachment=True,
@@ -263,7 +263,7 @@ def download_json(id):
             mimetype="application/json"
         )
     try:
-        gen_result = generate_gstr1(str(profile.id), gen.return_period, enforce_gate=True)
+        gen_result = generate_gstr1(str(profile.id), gen.return_period)
         return send_file(
             gen_result.json_path,
             as_attachment=True,

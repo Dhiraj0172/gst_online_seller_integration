@@ -5,7 +5,7 @@ Covers:
   1. POST /api/generate with CLEAN status -> 201 Created and generation record persisted.
   2. POST /api/generate with WARNING status -> 201 Created and generation allowed.
   3. POST /api/generate with BLOCKED status -> 403 Forbidden, generation rejected.
-  4. POST /api/generate client bypass rejection (force=true, enforce_gate=false ignored).
+  4. POST /api/generate client bypass rejection (force=true,  ignored).
   5. GET /api/generations listing generations scoped to active profile.
   6. GET /api/generations?return_period=MMYYYY filtering by period.
   7. GET /api/generate/<id> details endpoint returning complete generation data.
@@ -337,14 +337,14 @@ def test_03_api_generate_blocked_status_returns_403(client, api_test_env):
 
 
 def test_04_api_generate_client_bypass_rejected(client, api_test_env):
-    """4. POST /api/generate client bypass flags (force=true, enforce_gate=false) are rejected with 403."""
+    """4. POST /api/generate client bypass flags (force=true, ) are rejected with 403."""
     _login(client, api_test_env['user_a_username'], api_test_env['user_a_password'])
 
     # Attempt client bypass
     bypass_payload = {
         'return_period': '102024',
         'force': True,
-        'enforce_gate': False,
+        
         'bypass': True,
         'override': True,
         'skip_reconciliation': True

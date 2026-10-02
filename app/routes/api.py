@@ -634,7 +634,7 @@ def api_generate():
             "data": None
         }), 404
 
-    # Strict server-authoritative gate check: client bypass flags (force, enforce_gate) are strictly ignored
+    # Strict server-authoritative gate check: client bypass flags (force) are strictly ignored
     recon_report = run_full_reconciliation(profile.id, return_period)
     if recon_report.is_generation_blocked:
         return jsonify({

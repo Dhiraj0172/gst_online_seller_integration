@@ -1082,7 +1082,14 @@ def test_adv_12_amendment_transactions_section_counts(app, db, adversarial_env):
         ))
         _db.session.commit()
 
-        res = generate_gstr1(str(profile_id), period)
+        clean_report = {
+            'status': 'SUCCESS',
+            'is_generation_blocked': False,
+            'critical_failures': 0,
+            'warnings': 0,
+            'differences': []
+        }
+        res = generate_gstr1(str(profile_id), period, reconciliation_report=clean_report)
 
         # total_b2b must count both B2B and B2BA (1 + 1 = 2)
         assert res.stats['total_b2b'] == 2, f"Expected total_b2b=2 (1 B2B + 1 B2BA), got {res.stats['total_b2b']}"

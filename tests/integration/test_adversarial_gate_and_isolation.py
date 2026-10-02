@@ -313,14 +313,11 @@ def test_adv_01_post_run_blocked_bypass_form_fields(client, adversarial_env):
         {'return_period': '102024', 'force': 'true'},
         {'return_period': '102024', 'force': '1'},
         {'return_period': '102024', 'force': 'True'},
-        {'return_period': '102024', 'enforce_gate': 'false'},
-        {'return_period': '102024', 'enforce_gate': '0'},
-        {'return_period': '102024', 'enforce_gate': 'False'},
         {'return_period': '102024', 'bypass': 'true'},
         {'return_period': '102024', 'override': 'true'},
         {'return_period': '102024', 'skip_reconciliation': 'true'},
         {'return_period': '102024', 'admin': '1'},
-        {'return_period': '102024', 'force': 'true', 'enforce_gate': 'false', 'bypass': 'true'}
+        {'return_period': '102024', 'force': 'true', 'bypass': 'true'}
     ]
 
     for params in bypass_param_sets:
@@ -350,10 +347,9 @@ def test_adv_02_post_run_blocked_bypass_query_params(client, adversarial_env):
     urls_to_test = [
         '/generate/run?force=true',
         '/generate/run?force=1',
-        '/generate/run?enforce_gate=false',
         '/generate/run?bypass=true',
-        '/generate/run?force=true&enforce_gate=false&bypass=1&override=true',
-        '/generate/run?return_period=102024&force=true&enforce_gate=false'
+        '/generate/run?force=true&bypass=1&override=true',
+        '/generate/run?return_period=102024&force=true'
     ]
 
     for url in urls_to_test:
@@ -380,16 +376,12 @@ def test_adv_03_post_api_generate_blocked_bypass_payloads(client, adversarial_en
         {'return_period': '102024', 'force': True},
         {'return_period': '102024', 'force': 'true'},
         {'return_period': '102024', 'force': 1},
-        {'return_period': '102024', 'enforce_gate': False},
-        {'return_period': '102024', 'enforce_gate': 'false'},
-        {'return_period': '102024', 'enforce_gate': 0},
         {'return_period': '102024', 'bypass': True},
         {'return_period': '102024', 'override': True},
         {'return_period': '102024', 'skip_reconciliation': True},
         {
             'return_period': '102024',
             'force': True,
-            'enforce_gate': False,
             'bypass': True,
             'override': True,
             'role': 'admin'
@@ -423,7 +415,7 @@ def test_adv_04_post_api_generate_blocked_bypass_query_params_and_headers(client
 
     for headers in headers_list:
         res = client.post(
-            '/api/generate?force=true&enforce_gate=false&bypass=true',
+            '/api/generate?force=true&bypass=true',
             json={'return_period': '102024'},
             headers=headers
         )
@@ -442,7 +434,6 @@ def test_adv_05_regenerate_blocked_bypass_attempts(client, adversarial_env):
 
     bypass_forms = [
         {'return_period': '102024', 'force': 'true'},
-        {'return_period': '102024', 'enforce_gate': 'false'},
         {'return_period': '102024', 'bypass': 'true'}
     ]
 

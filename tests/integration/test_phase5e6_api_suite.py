@@ -23,7 +23,7 @@ Requirements tested:
 - Pagination & deterministic ordering
 - JSON structure and schema compliance
 - Unauthenticated rejection
-- Adversarial parameter resistance (force, bypass, override, enforce_gate, skip_reconciliation)
+- Adversarial parameter resistance (force, bypass, override, , skip_reconciliation)
 - Dashboard period scoping & /errors redirect
 """
 import uuid
@@ -652,9 +652,9 @@ def test_15_adversarial_foreign_profile_spoofing(client, phase5e6_test_env):
 
 
 def test_16_adversarial_bypass_flags_ineffective(client, phase5e6_test_env):
-    """Forbidden bypass flags (force, bypass, override, enforce_gate) do not weaken APIs."""
+    """Forbidden bypass flags (force, bypass, override, ) do not weaken APIs."""
     _login(client, phase5e6_test_env['user_a_username'], phase5e6_test_env['user_a_password'])
-    res = client.get('/api/dashboard-stats?return_period=082024&force=true&bypass=true&override=true&enforce_gate=false&skip_reconciliation=true')
+    res = client.get('/api/dashboard-stats?return_period=082024&force=true&bypass=true&override=true&skip_reconciliation=true')
     assert res.status_code == 200
     data = res.get_json()['data']
     assert data['total_invoices'] == 4

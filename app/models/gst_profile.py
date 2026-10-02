@@ -25,6 +25,7 @@ class GSTProfile(db.Model):
     import_histories = db.relationship('ImportHistory', back_populates='profile', cascade='all, delete-orphan')
     transactions = db.relationship('Transaction', back_populates='profile', cascade='all, delete-orphan')
     generations = db.relationship('GSTR1Generation', back_populates='profile', cascade='all, delete-orphan')
+    tcs_reconciliations = db.relationship('TCSReconciliation', back_populates='profile', cascade='all, delete-orphan')
 
     @staticmethod
     def validate_gstin(gstin):

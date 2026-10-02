@@ -669,18 +669,16 @@ def test_20_post_enforce_gate_false_cannot_bypass_blocked_status(client, review_
     assert '/statement/validation-errors' in res_blocked.location
 
 def test_21_get_query_parameter_force_true_cannot_bypass_blocked_status(client, review_env):
-    """6. GET query parameter force=true cannot bypass BLOCKED status."""
+    """6. GET query parameter force=true cannot bypass BLOCKED status (rejected with 405 Method Not Allowed)."""
     client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
     res_blocked = client.get('/generate/run?return_period=102024&force=true', follow_redirects=False)
-    assert res_blocked.status_code == 302
-    assert '/statement/validation-errors' in res_blocked.location
+    assert res_blocked.status_code == 405
 
 def test_22_get_query_parameter_enforce_gate_false_cannot_bypass_blocked_status(client, review_env):
-    """7. GET query parameter enforce_gate=false cannot bypass BLOCKED status."""
+    """7. GET query parameter enforce_gate=false cannot bypass BLOCKED status (rejected with 405 Method Not Allowed)."""
     client.post('/login', data={'username': review_env['user_a_username'], 'password': 'PasswordA1!'}, follow_redirects=True)
     res_blocked = client.get('/generate/run?return_period=102024&enforce_gate=false', follow_redirects=False)
-    assert res_blocked.status_code == 302
-    assert '/statement/validation-errors' in res_blocked.location
+    assert res_blocked.status_code == 405
 
 def test_23_hidden_form_field_manipulation_cannot_bypass_server_side_gate(client, review_env):
     """8. hidden/form field manipulation cannot bypass the server-side gate."""

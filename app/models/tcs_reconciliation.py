@@ -55,5 +55,7 @@ class TCSReconciliation(db.Model):
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+    profile = db.relationship('GSTProfile', back_populates='tcs_reconciliations')
+
     def __repr__(self):
         return f"<TCSReconciliation {self.return_period} - {self.state_code}>"

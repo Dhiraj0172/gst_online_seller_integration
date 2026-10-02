@@ -275,7 +275,7 @@ def check_b2b_totals(profile_id: int, return_period: str) -> CheckResult:
     gstr1_cess = Decimal('0.00')
 
     gstr1_inv_count = 0
-    for ctin_group in gstr1_data.get('b2b', []):
+    for ctin_group in (gstr1_data.get('b2b', []) + gstr1_data.get('b2ba', [])):
         for inv in ctin_group.get('inv', []):
             gstr1_inv_count += 1
             for itm in inv.get('itms', []):
@@ -698,12 +698,12 @@ def check_cdnr_totals(profile_id: int, return_period: str) -> CheckResult:
     gstr1_data = load_transactions(str(pid), rp)
     gstr1_taxable = Decimal('0.00')
 
-    for ctin_group in gstr1_data.get('cdnr', []):
+    for ctin_group in (gstr1_data.get('cdnr', []) + gstr1_data.get('cdnra', [])):
         for nt in ctin_group.get('nt', []):
             for itm in nt.get('itms', []):
                 gstr1_taxable += Decimal(str(itm.get('itm_det', {}).get('txval', 0)))
 
-    for cdnur_entry in gstr1_data.get('cdnur', []):
+    for cdnur_entry in (gstr1_data.get('cdnur', []) + gstr1_data.get('cdnura', [])):
         for itm in cdnur_entry.get('itms', []):
             gstr1_taxable += Decimal(str(itm.get('itm_det', {}).get('txval', 0)))
 

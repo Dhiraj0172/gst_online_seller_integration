@@ -66,6 +66,7 @@
                 </ul>
 
                 <form action="{{ url_for('generate.run') }}" method="POST" id="generateForm">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="return_period" value="{{ return_period }}">
                     <div class="form-check mb-3">
                         <input class="form-check-input" type="checkbox" id="includeHsn" name="include_hsn" checked>

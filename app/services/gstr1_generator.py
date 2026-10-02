@@ -14,6 +14,14 @@ from app.services.gst_rules import get_rules_for_period
 from app.utils.state_codes import resolve_pos_code
 
 
+class GenerationBlockedError(Exception):
+    """Raised when GSTR-1 generation is blocked due to critical reconciliation errors."""
+    def __init__(self, message: str = "Generation blocked due to critical reconciliation errors.", reconciliation_report: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.message = message
+        self.reconciliation_report = reconciliation_report
+
+
 class GenerationResult:
     def __init__(self, generation_id: str, excel_path: str, json_path: str, validation_result: ValidationResult, reconciliation_report: Dict[str, Any], stats: Dict[str, Any]):
         self.generation_id = generation_id
@@ -1251,6 +1259,7 @@ def generate_gstr1(
     if 'reconciliation_report' in kwargs and not reconciliation_report:
         reconciliation_report = kwargs['reconciliation_report']
 
+    initial_recon_report = reconciliation_report
     generation_id = str(uuid.uuid4())
 
     # 1. Load transactions
@@ -1264,8 +1273,10 @@ def generate_gstr1(
             json_data["hsnb2c"] = {"data": []}
 
     # 3. Reconciliation report
+    recon_obj = None
     if reconciliation_report is not None:
         if hasattr(reconciliation_report, 'to_dict'):
+            recon_obj = reconciliation_report
             reconciliation_report = reconciliation_report.to_dict()
     else:
         try:
@@ -1278,6 +1289,24 @@ def generate_gstr1(
                 "message": "Reconciliation passed. No critical errors found.",
                 "differences": []
             }
+
+    # Service-layer reconciliation gate check
+    is_blocked = False
+    gate_enforced = (initial_recon_report is not None) or bool(options.get('enforce_gate', False)) or bool(kwargs.get('enforce_gate', False))
+    if gate_enforced:
+        if recon_obj is not None:
+            is_blocked = getattr(recon_obj, 'is_generation_blocked', False)
+        if not is_blocked and isinstance(reconciliation_report, dict):
+            is_blocked = bool(
+                reconciliation_report.get('is_generation_blocked', False)
+                or reconciliation_report.get('status') == 'BLOCKED'
+                or (reconciliation_report.get('critical_failures', 0) > 0)
+            )
+        if is_blocked:
+            raise GenerationBlockedError(
+                f"GSTR-1 generation blocked: Reconciliation report has critical errors for profile {profile_id}, period {return_period}.",
+                reconciliation_report=reconciliation_report
+            )
 
     # 4. Section invoice counts
     total_b2b = sum(len(b.get("inv", [])) for b in json_data.get("b2b", [])) + sum(len(b.get("inv", [])) for b in json_data.get("b2ba", []))

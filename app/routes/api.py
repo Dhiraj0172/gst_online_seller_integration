@@ -9,7 +9,7 @@ from app import db
 from app.adapters.registry import _ADAPTER_REGISTRY
 from app.services.reconciliation_service import run_full_reconciliation
 from app.services.validation_service import get_pre_filing_review, get_validation_issues
-from app.services.gstr1_generator import generate_gstr1
+from app.services.gstr1_generator import generate_gstr1, GenerationBlockedError
 from app.services.audit_service import log_generation_audit
 from . import api_bp
 
@@ -750,6 +750,17 @@ def api_generate():
             "message": "GSTR-1 generated successfully",
             "data": resp_data
         }), 201
+
+    except GenerationBlockedError as e:
+        db.session.rollback()
+        return jsonify({
+            "error": True,
+            "message": str(e),
+            "data": {
+                "status": "BLOCKED",
+                "reconciliation_report": e.reconciliation_report
+            }
+        }), 403
 
     except Exception as e:
         db.session.rollback()

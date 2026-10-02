@@ -4,7 +4,7 @@ from datetime import datetime
 from flask import render_template, request, session, flash, redirect, url_for, jsonify, send_file, abort, current_app
 from flask_login import login_required, current_user
 from app.models import GSTR1Generation, GSTProfile
-from app.services.gstr1_generator import generate_gstr1
+from app.services.gstr1_generator import generate_gstr1, GenerationBlockedError
 from app.services.reconciliation_service import run_full_reconciliation
 from app.services.audit_service import log_generation_audit, extract_generation_summary
 from app.extensions import db
@@ -141,7 +141,7 @@ def _save_generation_record(profile, return_period, gen_result, recon_report, ex
     db.session.commit()
     return gen
 
-@generate_bp.route('/generate/run', methods=['POST', 'GET'])
+@generate_bp.route('/generate/run', methods=['POST'])
 @login_required
 def run():
     profile = get_active_profile()
@@ -178,6 +178,13 @@ def run():
         )
         _save_generation_record(profile, return_period, gen_result, recon_report)
         flash('GSTR-1 Excel and JSON generated successfully!', 'success')
+    except GenerationBlockedError as e:
+        db.session.rollback()
+        flash(
+            f"GSTR-1 generation is blocked: {e.message}",
+            "danger",
+        )
+        return redirect(url_for('statement.validation_errors', return_period=return_period))
     except Exception as e:
         db.session.rollback()
         current_app.logger.exception(f"Error during GSTR-1 generation: {e}")
@@ -219,12 +226,16 @@ def download_excel(id):
             download_name=filename
         )
     # If not on disk, regenerate on the fly
-    gen_result = generate_gstr1(str(profile.id), gen.return_period)
-    return send_file(
-        gen_result.excel_path,
-        as_attachment=True,
-        download_name=filename
-    )
+    try:
+        gen_result = generate_gstr1(str(profile.id), gen.return_period, enforce_gate=True)
+        return send_file(
+            gen_result.excel_path,
+            as_attachment=True,
+            download_name=filename
+        )
+    except GenerationBlockedError:
+        flash("File download unavailable: GSTR-1 generation is blocked by reconciliation errors.", "danger")
+        return redirect(url_for('generate.index'))
 
 @generate_bp.route('/generate/download/json/<int:id>')
 @login_required
@@ -251,13 +262,17 @@ def download_json(id):
             download_name=filename,
             mimetype="application/json"
         )
-    gen_result = generate_gstr1(str(profile.id), gen.return_period)
-    return send_file(
-        gen_result.json_path,
-        as_attachment=True,
-        download_name=filename,
-        mimetype="application/json"
-    )
+    try:
+        gen_result = generate_gstr1(str(profile.id), gen.return_period, enforce_gate=True)
+        return send_file(
+            gen_result.json_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/json"
+        )
+    except GenerationBlockedError:
+        flash("File download unavailable: GSTR-1 generation is blocked by reconciliation errors.", "danger")
+        return redirect(url_for('generate.index'))
 
 @generate_bp.route('/generate/validation/<int:id>')
 @login_required
@@ -269,7 +284,7 @@ def validation(id):
             return redirect(url_for('statement.validation_errors', return_period=gen.return_period))
     return redirect(url_for('statement.validation_errors'))
 
-@generate_bp.route('/generate/regenerate', methods=['POST', 'GET'])
+@generate_bp.route('/generate/regenerate', methods=['POST'])
 @login_required
 def regenerate():
     profile = get_active_profile()
@@ -339,6 +354,13 @@ def regenerate():
             old_summary=old_summary
         )
         flash('GSTR-1 regenerated successfully!', 'success')
+    except GenerationBlockedError as e:
+        db.session.rollback()
+        flash(
+            f"GSTR-1 generation is blocked: {e.message}",
+            "danger",
+        )
+        return redirect(url_for('statement.validation_errors', return_period=return_period))
     except Exception as e:
         db.session.rollback()
         current_app.logger.exception(f"Error during GSTR-1 regeneration: {e}")

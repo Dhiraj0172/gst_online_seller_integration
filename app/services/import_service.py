@@ -190,6 +190,7 @@ def process_import(
     allow_duplicate_file: bool = False,
     classification_fn: Optional[Callable] = None,
     import_history_id: Optional[int] = None,
+    _internal_commit: bool = True,
 ) -> ImportProcessingResult:
     """Execute the canonical import pipeline for any marketplace report.
 
@@ -236,7 +237,7 @@ def process_import(
             raw_file_path=file_path,
         )
         db.session.add(import_history)
-        db.session.commit()
+        db.session.commit() if _internal_commit else db.session.flush()
 
     result.import_history_id = import_history.id
 
@@ -260,7 +261,7 @@ def process_import(
                                 'message': f'Unsupported or unreadable file: {exc}'}],
                 })
                 import_history.processing_completed_at = datetime.utcnow()
-                db.session.commit()
+                db.session.commit() if _internal_commit else db.session.flush()
                 result.status = 'REJECTED_UNREADABLE'
                 result.stats['status'] = 'FAILED'
                 result.errors.append('Unsupported or unreadable file. Upload an Excel (.xlsx/.xls) or CSV marketplace export.')
@@ -282,7 +283,7 @@ def process_import(
                     'errors': [{'code': 'UNREADABLE_SOURCE', 'message': csv_check.errors[0]}],
                 })
                 import_history.processing_completed_at = datetime.utcnow()
-                db.session.commit()
+                db.session.commit() if _internal_commit else db.session.flush()
                 result.status = 'REJECTED_UNREADABLE'
                 result.stats['status'] = 'FAILED'
                 result.errors.append(csv_check.errors[0])
@@ -299,7 +300,7 @@ def process_import(
                            for message in validation_errors],
             })
             import_history.processing_completed_at = datetime.utcnow()
-            db.session.commit()
+            db.session.commit() if _internal_commit else db.session.flush()
             result.status = 'REJECTED_INVALID'
             result.stats['status'] = 'FAILED'
             result.validation_errors = list(validation_errors)
@@ -317,7 +318,7 @@ def process_import(
                 'errors': [report],
             })
             import_history.processing_completed_at = datetime.utcnow()
-            db.session.commit()
+            db.session.commit() if _internal_commit else db.session.flush()
             result.status = 'REJECTED_DUPLICATE_FILE'
             result.stats['status'] = 'FAILED'
             result.errors.append(report['message'])
@@ -334,7 +335,7 @@ def process_import(
                            for message in parse_result.errors],
             })
             import_history.processing_completed_at = datetime.utcnow()
-            db.session.commit()
+            db.session.commit() if _internal_commit else db.session.flush()
             result.status = 'REJECTED_UNREADABLE'
             result.stats['status'] = 'FAILED'
             result.errors.extend(parse_result.errors)
@@ -612,7 +613,7 @@ def process_import(
         import_history.processing_completed_at = datetime.utcnow()
         import_history.processing_duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
 
-        db.session.commit()
+        db.session.commit() if _internal_commit else db.session.flush()
 
         result.total_rows = total_rows
         result.success_rows = success_rows
@@ -625,20 +626,24 @@ def process_import(
         result.stats['status'] = import_history.processing_status
 
     except Exception as e:
-        db.session.rollback()
-        try:
-            failed_ih = db.session.get(ImportHistory, result.import_history_id)
-            if failed_ih:
-                failed_ih.processing_status = 'FAILED'
-                failed_ih.processing_completed_at = datetime.utcnow()
-                failed_ih.error_summary = json.dumps({
-                    'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
-                               'error_rows': 1, 'skipped_rows': 0},
-                    'errors': [{'code': 'UNEXPECTED_ERROR', 'message': str(e)}],
-                })
-                db.session.commit()
-        except Exception:
+        if _internal_commit:
             db.session.rollback()
+            try:
+                failed_ih = db.session.get(ImportHistory, result.import_history_id)
+                if failed_ih:
+                    failed_ih.processing_status = 'FAILED'
+                    failed_ih.processing_completed_at = datetime.utcnow()
+                    failed_ih.error_summary = json.dumps({
+                        'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0,
+                                   'error_rows': 1, 'skipped_rows': 0},
+                        'errors': [{'code': 'UNEXPECTED_ERROR', 'message': str(e)}],
+                    })
+                    db.session.commit()
+            except Exception:
+                db.session.rollback()
+        else:
+            # Caller handles the transaction entirely. Just let it raise, wait we still append error.
+            pass
         result.status = 'FAILED'
         result.stats['status'] = 'FAILED'
         result.errors.append(str(e))
@@ -852,15 +857,23 @@ def reprocess_import(
     db.session.flush()
 
     # 11. Re-run import pipeline
-    res = process_import(
-        file_path=original_import.raw_file_path,
-        profile_id=profile_id,
-        platform_name=original_import.platform_name,
-        user_id=user_id,
-        return_period=original_import.return_period,
-        financial_year=original_import.financial_year,
-        allow_duplicate_file=True,
-        import_history_id=new_id
-    )
-
-    return res
+    try:
+        res = process_import(
+            file_path=original_import.raw_file_path,
+            profile_id=profile_id,
+            platform_name=original_import.platform_name,
+            user_id=user_id,
+            return_period=original_import.return_period,
+            financial_year=original_import.financial_year,
+            allow_duplicate_file=True,
+            import_history_id=new_id,
+            _internal_commit=False
+        )
+        if res.status not in ('COMPLETED', 'PARTIAL_SUCCESS'):
+            db.session.rollback()
+        else:
+            db.session.commit()
+        return res
+    except Exception:
+        db.session.rollback()
+        raise

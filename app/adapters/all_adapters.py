@@ -265,7 +265,7 @@ class BaseGenericAdapter(PlatformAdapter):
             try:
                 workbook = openpyxl.load_workbook(path, data_only=True)
             except Exception as exc:
-                return [], file_name, [f'Unsupported or unreadable file {path}: {exc}'], {}
+                return [], file_name, [f'Unsupported or unreadable file {path}: {exc}'], {}, None
             diagnostics = {'source_type': 'excel'}
             return list(self._sheets_from_workbook(workbook)), file_name, [], diagnostics, workbook
 
@@ -387,7 +387,7 @@ class BaseGenericAdapter(PlatformAdapter):
             return True
         if not self.SHEET_NAMES:
             return False
-        sheets, _name, errors, _diagnostics = self._load_sheets(workbook_or_data, file_name)
+        sheets, _name, errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data, file_name)
         if errors:
             return False
         preferred = {_key(sheet_name) for sheet_name in self.SHEET_NAMES}
@@ -483,33 +483,40 @@ class BaseGenericAdapter(PlatformAdapter):
 
         header_rows: Dict[str, int] = {}
         sheet_columns: Dict[str, List[str]] = {}
-        for sheet, header in usable:
-            header_rows[sheet.name] = header['row_number']
-            sheet_columns[sheet.name] = sorted(header['mapping'])
-            for row_number, row in self._iter_data_rows(sheet, header):
-                raw_data: Dict[str, Any] = {}
-                headers = header['headers']
-                for position in range(max(len(headers), len(row))):
-                    if position < len(headers):
-                        key = headers[position] or f'col_{position}'
-                    else:
-                        key = f'col_{position}'
-                    raw_data[key] = row[position] if position < len(row) else None
-                if len(row) > len(headers):
-                    # Values past the header columns are kept, never dropped.
-                    raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
-                row_object = self._build_import_row(raw_data, row_number, sheet.name)
-                result.rows.append(row_object)
-                if row_object.status is ImportRowStatus.ERROR:
+        
+        def _row_generator():
+            for sheet, header in usable:
+                header_rows[sheet.name] = header['row_number']
+                sheet_columns[sheet.name] = sorted(header['mapping'])
+                for row_number, row in self._iter_data_rows(sheet, header):
+                    raw_data: Dict[str, Any] = {}
+                    headers = header['headers']
+                    for position in range(max(len(headers), len(row))):
+                        if position < len(headers):
+                            key = headers[position] or f'col_{position}'
+                        else:
+                            key = f'col_{position}'
+                        raw_data[key] = row[position] if position < len(row) else None
+                    if len(row) > len(headers):
+                        raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
+                    row_object = self._build_import_row(raw_data, row_number, sheet.name)
+                    yield row_object
+
+        result.rows = _row_generator()
+        
+        if not stream:
+            result.rows = list(result.rows)
+            result.total_rows = len(result.rows)
+            for row_object in result.rows:
+                if row_object.status.name == 'ERROR':
                     result.error_rows += 1
-                elif row_object.status is ImportRowStatus.WARNING:
+                elif row_object.status.name == 'WARNING':
                     result.warning_rows += 1
-                elif row_object.status is ImportRowStatus.SKIPPED:
+                elif row_object.status.name == 'SKIPPED':
                     result.skipped_rows += 1
                 else:
                     result.success_rows += 1
 
-        result.total_rows = len(result.rows)
         result.metadata['header_rows'] = header_rows
         result.metadata['sheet_columns'] = sheet_columns
         result.metadata['sheets_parsed'] = list(header_rows)
@@ -1264,3 +1271,5 @@ class CitymallAdapter(_GenericFilenameAdapter):
 class RoposoAdapter(_GenericFilenameAdapter):
     PLATFORM_NAME = 'Roposo'
     FILENAME_TOKENS = ('roposo', 'clout')
+
+

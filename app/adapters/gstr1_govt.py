@@ -176,7 +176,7 @@ class GSTR1GovtAdapter(BaseGSTR1GovtAdapter):
     # ------------------------------------------------------------------
     def validate(self, workbook_or_data) -> Tuple[bool, List[str]]:
         """Validate multi-sheet GSTR-1 workbook structure."""
-        sheets, _file_name, load_errors, _diag = self._load_sheets(workbook_or_data)
+        sheets, _file_name, load_errors, _diag, _wb_ref = self._load_sheets(workbook_or_data)
         if load_errors:
             return False, list(load_errors)
         if not sheets:
@@ -428,3 +428,4 @@ class GSTR1GovtAdapter(BaseGSTR1GovtAdapter):
                 result.metadata['docs_summary'] = doc_rows
                 break
         return result
+

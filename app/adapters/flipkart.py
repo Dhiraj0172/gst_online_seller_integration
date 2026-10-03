@@ -271,6 +271,9 @@ class FlipkartAdapter(BaseFlipkartAdapter):
 
         result.metadata['header_rows'] = header_rows
         result.metadata['sheet_columns'] = sheet_columns
+        result.metadata['sheets_parsed'] = list(header_rows)
+        result.metadata['columns_found'] = sheet_columns
+        result.metadata['sheet_columns'] = sheet_columns
         result.metadata['sheets_parsed'] = [target_sheet.name]
         result.metadata['unrecognized_headers'] = sorted(set(header['unknown_headers']))
         result.metadata['recognized_columns'] = sorted(set(header['mapping'].keys()))

@@ -839,7 +839,7 @@ def reprocess_import(
     # Lock the original import and mark it as superseded to prevent concurrent reprocesses
     updated = db.session.query(ImportHistory).filter(
         ImportHistory.id == import_history_id,
-        ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL_SUCCESS', 'FAILED', 'REJECTED_UNREADABLE'])
+        ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL', 'FAILED', 'REJECTED_UNREADABLE'])
     ).update({'processing_status': 'SUPERSEDED'}, synchronize_session=False)
 
     if updated == 0:
@@ -902,3 +902,4 @@ def reprocess_import(
     except Exception:
         db.session.rollback()
         raise
+

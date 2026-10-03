@@ -272,7 +272,7 @@ class BaseGenericAdapter(PlatformAdapter):
         return [], file_name, [
             f'Unsupported data type {type(workbook_or_data).__name__}: expected an '
             f'openpyxl Workbook, a .xlsx/.csv path, or a list of rows.'
-        ], {}
+        ], {}, None
 
     @staticmethod
     def _sheets_from_workbook(workbook: openpyxl.Workbook) -> Iterator[SheetSource]:

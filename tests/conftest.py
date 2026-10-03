@@ -30,7 +30,8 @@ def db(app):
     with app.app_context():
         _db.create_all()
         yield _db
-        _db.session.rollback()
+        _db.session.remove()
+        _db.drop_all()
 
 
 @pytest.fixture

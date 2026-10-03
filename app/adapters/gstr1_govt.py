@@ -154,7 +154,7 @@ class GSTR1GovtAdapter(BaseGSTR1GovtAdapter):
         if any(token in name for token in self.FILENAME_TOKENS):
             return True
 
-        sheets, _name, errors, _diag = self._load_sheets(workbook_or_data, file_name)
+        sheets, _name, errors, _diag, _wb = self._load_sheets(workbook_or_data, file_name)
         if errors or not sheets:
             return False
 
@@ -409,10 +409,10 @@ class GSTR1GovtAdapter(BaseGSTR1GovtAdapter):
 
         super().post_normalize(raw_row, normalized, values, warnings)
 
-    def parse(self, workbook_or_data, file_name: str = '') -> ImportResult:
-        result = super().parse(workbook_or_data, file_name)
+    def parse(self, workbook_or_data, file_name: str = '', stream: bool = False) -> ImportResult:
+        result = super().parse(workbook_or_data, file_name, stream=stream)
         # Parse non-transaction docs sheet if present
-        sheets, _name, _errs, _diag = self._load_sheets(workbook_or_data, file_name)
+        sheets, _name, _errs, _diag, _wb_ref = self._load_sheets(workbook_or_data, file_name)
         for s in sheets:
             if _key(s.name) == 'docs':
                 doc_rows = []

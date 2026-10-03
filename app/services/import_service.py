@@ -250,8 +250,8 @@ def process_import(
 
         if not is_csv:
             try:
-                wb = openpyxl.load_workbook(file_path, data_only=True)
-                source = wb
+                wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+                wb.close()
             except Exception as exc:
                 import_history.processing_status = 'FAILED'
                 import_history.error_summary = json.dumps({
@@ -325,7 +325,7 @@ def process_import(
             return result
 
         # Step 6: Parse File using Adapter
-        parse_result = adapter.parse(source, filename)
+        parse_result = adapter.parse(source, filename, stream=True)
         if parse_result.errors:
             import_history.processing_status = 'FAILED'
             import_history.error_summary = json.dumps({
@@ -341,13 +341,8 @@ def process_import(
             result.errors.extend(parse_result.errors)
             return result
 
-        # Step 7: Batch duplicate check against database
-        candidate_fingerprints = [
-            build_fingerprint(r.normalized_data or {}, profile_id, platform_name)
-            for r in parse_result.rows
-        ]
-        existing_by_fp = find_existing_transactions(profile_id, candidate_fingerprints) if candidate_fingerprints else {}
-
+        # Step 7: Batch duplicate check against database & Row processing
+        from itertools import islice
         profile = db.session.get(GSTProfile, profile_id)
         seller_gstin = profile.gstin if profile else ''
         seller_state = profile.state_code if profile else ''
@@ -362,7 +357,6 @@ def process_import(
         warning_report = []
         seen_in_file: Dict[str, int] = {}
 
-        # GSTR-1 Table mappings
         gstr1_table_map = {
             'B2B': 'b2b',
             'B2BA': 'b2ba',
@@ -379,211 +373,228 @@ def process_import(
             'NONGST': 'nil',
             'EXPORT': 'exp',
             'EXPA': 'expa',
-            'SEZ': 'exp',
+            'ADV': 'at',
+            'ADVA': 'ata',
+            'ADVS': 'txpd',
+            'ADVSA': 'txpda',
             'HSN': 'hsn',
-            'HSNB2C': 'hsnb2c',
-            'UNKNOWN': 'unknown'
+            'DOC': 'doc',
         }
+        row_iterator = iter(parse_result.rows)
+        batch_size = 2000
 
-        # Step 8: Row-by-row normalization, duplicate marking, and batched persistence
-        for row in parse_result.rows:
-            total_rows += 1
-            norm = row.normalized_data or {}
-            fingerprint = build_fingerprint(norm, profile_id, platform_name)
+        while True:
+            batch = list(islice(row_iterator, batch_size))
+            if not batch:
+                break
 
-            # In-file and existing duplicate detection
-            duplicate_entry = None
-            if fingerprint in seen_in_file:
-                first_row = seen_in_file[fingerprint]
-                duplicate_entry = duplicate_report_entry(
-                    row.row_number, DUPLICATE_IN_FILE,
-                    f'Duplicate of row {first_row} in this file',
-                    duplicate_of_row=first_row,
-                )
-            elif fingerprint in existing_by_fp:
-                prior_tx = existing_by_fp[fingerprint]
-                duplicate_entry = duplicate_report_entry(
-                    row.row_number, DUPLICATE_EXISTING,
-                    f'Already imported: transaction #{prior_tx.id} '
-                    f'(import #{prior_tx.import_history_id})',
-                    duplicate_of_transaction_id=prior_tx.id,
-                    duplicate_of_import_id=prior_tx.import_history_id,
-                )
+            candidate_fingerprints = [
+                build_fingerprint(r.normalized_data or {}, profile_id, platform_name)
+                for r in batch
+            ]
+            existing_by_fp = find_existing_transactions(profile_id, candidate_fingerprints) if candidate_fingerprints else {}
 
-            if duplicate_entry is not None:
-                skipped_rows += 1
-                duplicates.append(duplicate_entry)
+            for row in batch:
+                total_rows += 1
+                norm = row.normalized_data or {}
+                fingerprint = build_fingerprint(norm, profile_id, platform_name)
+
+                # In-file and existing duplicate detection
+                duplicate_entry = None
+                if fingerprint in seen_in_file:
+                    first_row = seen_in_file[fingerprint]
+                    duplicate_entry = duplicate_report_entry(
+                        row.row_number, DUPLICATE_IN_FILE,
+                        f'Duplicate of row {first_row} in this file',
+                        duplicate_of_row=first_row,
+                    )
+                elif fingerprint in existing_by_fp:
+                    prior_tx = existing_by_fp[fingerprint]
+                    duplicate_entry = duplicate_report_entry(
+                        row.row_number, DUPLICATE_EXISTING,
+                        f'Already imported: transaction #{prior_tx.id} '
+                        f'(import #{prior_tx.import_history_id})',
+                        duplicate_of_transaction_id=prior_tx.id,
+                        duplicate_of_import_id=prior_tx.import_history_id,
+                    )
+
+                if duplicate_entry is not None:
+                    skipped_rows += 1
+                    duplicates.append(duplicate_entry)
+                    raw_imp = RawImport(
+                        import_history_id=import_history.id,
+                        sheet_name=getattr(row, 'sheet_name', '') or _first_parsed_sheet(parse_result),
+                        row_number=row.row_number,
+                        raw_data=json.dumps({k: str(v) for k, v in row.raw_data.items() if v is not None}),
+                        status='SKIPPED',
+                        errors=json.dumps([duplicate_entry]),
+                        warnings=json.dumps(row.warnings) if row.warnings else None,
+                    )
+                    db.session.add(raw_imp)
+                    if total_rows % 1000 == 0:
+                        db.session.flush()
+                    continue
+
+                seen_in_file.setdefault(fingerprint, row.row_number)
+
+                if row.status is ImportRowStatus.SUCCESS or row.status.value == 'SUCCESS':
+                    success_rows += 1
+                elif row.status is ImportRowStatus.WARNING or row.status.value == 'WARNING':
+                    warning_rows += 1
+                else:
+                    error_rows += 1
+                    rejections.append(duplicate_report_entry(
+                        row.row_number, 'ROW_REJECTED', '; '.join(row.errors),
+                    ))
+
+                for warning in row.warnings:
+                    warning_report.append(duplicate_report_entry(
+                        row.row_number, 'ROW_WARNING', warning,
+                    ))
+
+                # RawImport record
                 raw_imp = RawImport(
                     import_history_id=import_history.id,
                     sheet_name=getattr(row, 'sheet_name', '') or _first_parsed_sheet(parse_result),
                     row_number=row.row_number,
                     raw_data=json.dumps({k: str(v) for k, v in row.raw_data.items() if v is not None}),
-                    status='SKIPPED',
-                    errors=json.dumps([duplicate_entry]),
+                    status=row.status.value,
+                    errors=json.dumps(row.errors) if row.errors else None,
                     warnings=json.dumps(row.warnings) if row.warnings else None,
                 )
                 db.session.add(raw_imp)
-                if total_rows % 1000 == 0:
-                    db.session.flush()
-                continue
 
-            seen_in_file.setdefault(fingerprint, row.row_number)
+                if row.status is ImportRowStatus.ERROR or row.status.value == 'ERROR':
+                    if total_rows % 1000 == 0:
+                        db.session.flush()
+                    continue
 
-            if row.status is ImportRowStatus.SUCCESS or row.status.value == 'SUCCESS':
-                success_rows += 1
-            elif row.status is ImportRowStatus.WARNING or row.status.value == 'WARNING':
-                warning_rows += 1
-            else:
-                error_rows += 1
-                rejections.append(duplicate_report_entry(
-                    row.row_number, 'ROW_REJECTED', '; '.join(row.errors),
-                ))
-
-            for warning in row.warnings:
-                warning_report.append(duplicate_report_entry(
-                    row.row_number, 'ROW_WARNING', warning,
-                ))
-
-            # RawImport record
-            raw_imp = RawImport(
-                import_history_id=import_history.id,
-                sheet_name=getattr(row, 'sheet_name', '') or _first_parsed_sheet(parse_result),
-                row_number=row.row_number,
-                raw_data=json.dumps({k: str(v) for k, v in row.raw_data.items() if v is not None}),
-                status=row.status.value,
-                errors=json.dumps(row.errors) if row.errors else None,
-                warnings=json.dumps(row.warnings) if row.warnings else None,
-            )
-            db.session.add(raw_imp)
-
-            if row.status is ImportRowStatus.ERROR or row.status.value == 'ERROR':
-                if total_rows % 1000 == 0:
-                    db.session.flush()
-                continue
-
-            # Normalized Transaction persistence
-            is_agg = bool(
-                norm.get('is_aggregate')
-                or getattr(row, 'is_aggregate', False)
-                or (getattr(row, 'sheet_name', '').lower() in ('b2cs', 'b2csa', 'nil', 'hsn', 'hsnb2c'))
-            )
-            has_doc_number = bool(norm.get('invoice_number') or norm.get('note_number'))
-
-            if norm and (has_doc_number or is_agg):
-                inv_date = parse_date(norm.get('invoice_date'))
-                note_date = parse_date(norm.get('note_date'))
-                orig_inv_date = parse_date(norm.get('original_invoice_date'))
-
-                # Supply classification
-                raw_supply = str(norm.get('supply_type') or '').strip().upper()
-                if raw_supply in (
-                    'B2B', 'B2BA', 'B2CS', 'B2CSA', 'B2CL', 'B2CLA',
-                    'CDNR', 'CDNRA', 'CDNUR', 'CDNURA', 'NIL', 'EXEMPT',
-                    'NONGST', 'EXPORT', 'EXPA', 'SEZ', 'HSN', 'HSNB2C'
-                ):
-                    supply_type = raw_supply
-                else:
-                    classify = classification_fn or classify_transaction
-                    supply_type = classify(norm, profile, return_period)
-
-                pos_code = resolve_pos_code(norm.get('place_of_supply'), norm.get('customer_gstin'), seller_state)
-                txval = _safe_decimal(norm.get('taxable_value'))
-                rate = _safe_decimal(norm.get('tax_rate'))
-                cgst = _safe_decimal(norm.get('cgst_amount'))
-                sgst = _safe_decimal(norm.get('sgst_amount'))
-                igst = _safe_decimal(norm.get('igst_amount'))
-                cess = _safe_decimal(norm.get('cess_amount'))
-                cgst_r = _safe_decimal(norm.get('cgst_rate'))
-                sgst_r = _safe_decimal(norm.get('sgst_rate'))
-                igst_r = _safe_decimal(norm.get('igst_rate'))
-
-                if cgst == 0 and sgst == 0 and igst == 0 and rate > 0 and txval > 0:
-                    if pos_code and seller_state and pos_code == seller_state:
-                        half_rate = rate / Decimal('2')
-                        cgst = ((txval * half_rate) / Decimal('100')).quantize(Decimal('0.01'))
-                        sgst = ((txval * half_rate) / Decimal('100')).quantize(Decimal('0.01'))
-                        cgst_r = half_rate
-                        sgst_r = half_rate
-                    else:
-                        igst = ((txval * rate) / Decimal('100')).quantize(Decimal('0.01'))
-                        igst_r = rate
-                elif rate > 0 and cgst_r == 0 and sgst_r == 0 and igst_r == 0:
-                    if pos_code and seller_state and pos_code == seller_state:
-                        cgst_r = rate / Decimal('2')
-                        sgst_r = rate / Decimal('2')
-                    else:
-                        igst_r = rate
-
-                total_tax = cgst + sgst + igst + cess
-                inv_val = _safe_decimal(norm.get('invoice_value'))
-                if inv_val == 0 and txval > 0:
-                    inv_val = txval + total_tax
-
-                tx = Transaction(
-                    import_history_id=import_history.id,
-                    profile_id=profile_id,
-                    raw_import=raw_imp,
-                    source_platform=platform_name,
-                    source_row_id=str(
-                        norm.get('order_item_id')
-                        or norm.get('sub_order_id')
-                        or norm.get('order_id')
-                        or f"{getattr(row, 'sheet_name', 'row')}_{row.row_number}"
-                    ),
-                    order_id=norm.get('order_id'),
-                    invoice_number=(None if is_agg else norm.get('invoice_number')),
-                    invoice_date=inv_date,
-                    invoice_type=('aggregate' if is_agg else (norm.get('invoice_type') or 'regular')),
-                    customer_name=norm.get('customer_name'),
-                    customer_gstin=norm.get('customer_gstin'),
-                    place_of_supply=pos_code,
-                    seller_gstin=seller_gstin,
-                    item_code=norm.get('item_code'),
-                    hsn_sac=norm.get('hsn_sac'),
-                    description=norm.get('description'),
-                    quantity=_safe_decimal(norm.get('quantity'), Decimal('0') if is_agg else Decimal('1')),
-                    uqc=norm.get('uqc', 'NOS'),
-                    taxable_value=txval,
-                    discount=_safe_decimal(norm.get('discount')) if norm.get('discount') else None,
-                    cgst_rate=cgst_r,
-                    cgst_amount=cgst,
-                    sgst_rate=sgst_r,
-                    sgst_amount=sgst,
-                    igst_rate=igst_r,
-                    igst_amount=igst,
-                    cess_rate=_safe_decimal(norm.get('cess_rate')),
-                    cess_amount=cess,
-                    total_tax=total_tax,
-                    invoice_value=inv_val,
-                    tax_rate=rate,
-                    supply_type=supply_type,
-                    reverse_charge='Y' if str(norm.get('reverse_charge', 'N')).upper() in ('Y', 'YES', 'TRUE', '1') else 'N',
-                    ecommerce_gstin=norm.get('ecommerce_gstin'),
-                    marketplace_name=norm.get('marketplace_name', platform_name),
-                    note_type=norm.get('note_type'),
-                    note_number=norm.get('note_number'),
-                    note_date=note_date,
-                    original_invoice_number=norm.get('original_invoice_number'),
-                    original_invoice_date=orig_inv_date,
-                    nil_rated_flag=(supply_type == 'NIL'),
-                    exempt_flag=(supply_type == 'EXEMPT'),
-                    non_gst_flag=(supply_type == 'NONGST'),
-                    return_flag=bool(norm.get('return_flag', False)),
-                    cancellation_flag=bool(norm.get('cancellation_flag', False)),
-                    amendment_flag=bool(norm.get('amendment_flag', False)),
-                    validation_status='VALID',
-                    classification_status=supply_type,
-                    gstr1_table=gstr1_table_map.get(supply_type, 'unknown'),
-                    source_metadata=json.dumps(
-                        dict(norm.get('source_metadata', {}), is_aggregate=is_agg, source_sheet=getattr(row, 'sheet_name', '')),
-                        default=str
-                    ),
-                    row_fingerprint=fingerprint,
+                # Normalized Transaction persistence
+                is_agg = bool(
+                    norm.get('is_aggregate')
+                    or getattr(row, 'is_aggregate', False)
+                    or (getattr(row, 'sheet_name', '').lower() in ('b2cs', 'b2csa', 'nil', 'hsn', 'hsnb2c'))
                 )
-                db.session.add(tx)
+                has_doc_number = bool(norm.get('invoice_number') or norm.get('note_number'))
 
-            if total_rows % 1000 == 0:
-                db.session.flush()
+                if norm and (has_doc_number or is_agg):
+                    inv_date = parse_date(norm.get('invoice_date'))
+                    note_date = parse_date(norm.get('note_date'))
+                    orig_inv_date = parse_date(norm.get('original_invoice_date'))
+
+                    # Supply classification
+                    raw_supply = str(norm.get('supply_type') or '').strip().upper()
+                    if raw_supply in (
+                        'B2B', 'B2BA', 'B2CS', 'B2CSA', 'B2CL', 'B2CLA',
+                        'CDNR', 'CDNRA', 'CDNUR', 'CDNURA', 'NIL', 'EXEMPT',
+                        'NONGST', 'EXPORT', 'EXPA', 'SEZ', 'HSN', 'HSNB2C'
+                    ):
+                        supply_type = raw_supply
+                    else:
+                        classify = classification_fn or classify_transaction
+                        supply_type = classify(norm, profile, return_period)
+
+                    pos_code = resolve_pos_code(norm.get('place_of_supply'), norm.get('customer_gstin'), seller_state)
+                    txval = _safe_decimal(norm.get('taxable_value'))
+                    rate = _safe_decimal(norm.get('tax_rate'))
+                    cgst = _safe_decimal(norm.get('cgst_amount'))
+                    sgst = _safe_decimal(norm.get('sgst_amount'))
+                    igst = _safe_decimal(norm.get('igst_amount'))
+                    cess = _safe_decimal(norm.get('cess_amount'))
+                    cgst_r = _safe_decimal(norm.get('cgst_rate'))
+                    sgst_r = _safe_decimal(norm.get('sgst_rate'))
+                    igst_r = _safe_decimal(norm.get('igst_rate'))
+
+                    if cgst == 0 and sgst == 0 and igst == 0 and rate > 0 and txval > 0:
+                        if pos_code and seller_state and pos_code == seller_state:
+                            half_rate = rate / Decimal('2')
+                            cgst = ((txval * half_rate) / Decimal('100')).quantize(Decimal('0.01'))
+                            sgst = ((txval * half_rate) / Decimal('100')).quantize(Decimal('0.01'))
+                            cgst_r = half_rate
+                            sgst_r = half_rate
+                        else:
+                            igst = ((txval * rate) / Decimal('100')).quantize(Decimal('0.01'))
+                            igst_r = rate
+                    elif rate > 0 and cgst_r == 0 and sgst_r == 0 and igst_r == 0:
+                        if pos_code and seller_state and pos_code == seller_state:
+                            cgst_r = rate / Decimal('2')
+                            sgst_r = rate / Decimal('2')
+                        else:
+                            igst_r = rate
+
+                    total_tax = cgst + sgst + igst + cess
+                    inv_val = _safe_decimal(norm.get('invoice_value'))
+                    if inv_val == 0 and txval > 0:
+                        inv_val = txval + total_tax
+
+                    tx = Transaction(
+                        import_history_id=import_history.id,
+                        profile_id=profile_id,
+                        raw_import=raw_imp,
+                        source_platform=platform_name,
+                        source_row_id=str(
+                            norm.get('order_item_id')
+                            or norm.get('sub_order_id')
+                            or norm.get('order_id')
+                            or f"{getattr(row, 'sheet_name', 'row')}_{row.row_number}"
+                        ),
+                        order_id=norm.get('order_id'),
+                        invoice_number=(None if is_agg else norm.get('invoice_number')),
+                        invoice_date=inv_date,
+                        invoice_type=('aggregate' if is_agg else (norm.get('invoice_type') or 'regular')),
+                        customer_name=norm.get('customer_name'),
+                        customer_gstin=norm.get('customer_gstin'),
+                        place_of_supply=pos_code,
+                        seller_gstin=seller_gstin,
+                        item_code=norm.get('item_code'),
+                        hsn_sac=norm.get('hsn_sac'),
+                        description=norm.get('description'),
+                        quantity=_safe_decimal(norm.get('quantity'), Decimal('0') if is_agg else Decimal('1')),
+                        uqc=norm.get('uqc', 'NOS'),
+                        taxable_value=txval,
+                        discount=_safe_decimal(norm.get('discount')) if norm.get('discount') else None,
+                        cgst_rate=cgst_r,
+                        cgst_amount=cgst,
+                        sgst_rate=sgst_r,
+                        sgst_amount=sgst,
+                        igst_rate=igst_r,
+                        igst_amount=igst,
+                        cess_rate=_safe_decimal(norm.get('cess_rate')),
+                        cess_amount=cess,
+                        total_tax=total_tax,
+                        invoice_value=inv_val,
+                        tax_rate=rate,
+                        supply_type=supply_type,
+                        reverse_charge='Y' if str(norm.get('reverse_charge', 'N')).upper() in ('Y', 'YES', 'TRUE', '1') else 'N',
+                        ecommerce_gstin=norm.get('ecommerce_gstin'),
+                        marketplace_name=norm.get('marketplace_name', platform_name),
+                        note_type=norm.get('note_type'),
+                        note_number=norm.get('note_number'),
+                        note_date=note_date,
+                        original_invoice_number=norm.get('original_invoice_number'),
+                        original_invoice_date=orig_inv_date,
+                        nil_rated_flag=(supply_type == 'NIL'),
+                        exempt_flag=(supply_type == 'EXEMPT'),
+                        non_gst_flag=(supply_type == 'NONGST'),
+                        return_flag=bool(norm.get('return_flag', False)),
+                        cancellation_flag=bool(norm.get('cancellation_flag', False)),
+                        amendment_flag=bool(norm.get('amendment_flag', False)),
+                        validation_status='VALID',
+                        classification_status=supply_type,
+                        gstr1_table=gstr1_table_map.get(supply_type, 'unknown'),
+                        source_metadata=json.dumps(
+                            dict(norm.get('source_metadata', {}), is_aggregate=is_agg, source_sheet=getattr(row, 'sheet_name', '')),
+                            default=str
+                        ),
+                        row_fingerprint=fingerprint,
+                    )
+                    db.session.add(tx)
+
+                if total_rows % 1000 == 0:
+                    db.session.flush()
+
+            # End of batch flush
+            db.session.flush()
 
         # Step 9: Final flush and ImportHistory bookkeeping
         db.session.flush()
@@ -811,6 +822,7 @@ def reprocess_import(
         return result
 
     # 4. Check generation freeze BEFORE mutating
+    # 4. Check generation freeze BEFORE mutating
     freeze = db.session.query(GSTR1Generation).filter_by(
         profile_id=profile_id,
         return_period=original_import.return_period,
@@ -821,6 +833,19 @@ def reprocess_import(
         result = ImportProcessingResult()
         result.status = 'FAILED'
         result.errors.append("Cannot reprocess: A finalized GSTR-1 generation exists for this return period.")
+        return result
+
+    # 4.5 Atomic Concurrency Check (Idempotency)
+    # Lock the original import and mark it as superseded to prevent concurrent reprocesses
+    updated = db.session.query(ImportHistory).filter(
+        ImportHistory.id == import_history_id,
+        ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL_SUCCESS', 'FAILED', 'REJECTED_UNREADABLE'])
+    ).update({'processing_status': 'SUPERSEDED'}, synchronize_session=False)
+
+    if updated == 0:
+        result = ImportProcessingResult()
+        result.status = 'FAILED'
+        result.errors.append("Cannot reprocess: Import is already being reprocessed or is not in a valid state.")
         return result
 
     # 8. Create NEW ImportHistory

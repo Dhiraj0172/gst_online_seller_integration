@@ -225,7 +225,7 @@ class BaseGenericAdapter(PlatformAdapter):
         if isinstance(workbook_or_data, (bytes, io.BytesIO)):
             try:
                 stream = io.BytesIO(workbook_or_data) if isinstance(workbook_or_data, bytes) else workbook_or_data
-                workbook = openpyxl.load_workbook(stream, data_only=True)
+                workbook = openpyxl.load_workbook(stream, data_only=True, read_only=True)
                 diagnostics = {'source_type': 'excel'}
                 return list(self._sheets_from_workbook(workbook)), file_name, [], diagnostics, workbook
             except Exception as exc:
@@ -263,7 +263,7 @@ class BaseGenericAdapter(PlatformAdapter):
                     f'(.xlsx/.xlsm) or .csv export.'
                 ], {}, None
             try:
-                workbook = openpyxl.load_workbook(path, data_only=True)
+                workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
             except Exception as exc:
                 return [], file_name, [f'Unsupported or unreadable file {path}: {exc}'], {}, None
             diagnostics = {'source_type': 'excel'}

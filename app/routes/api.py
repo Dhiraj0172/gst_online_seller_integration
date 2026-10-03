@@ -107,8 +107,9 @@ def dashboard_stats():
         })
 
     return_period = get_active_return_period(profile_id)
+    from app.utils.query import tenant_query
     tx_query = (
-        Transaction.query.filter_by(profile_id=profile_id, is_deleted=False)
+        tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(ImportHistory.return_period == return_period)
     )
@@ -142,7 +143,7 @@ def dashboard_stats():
         'nil': tx_query.filter(Transaction.supply_type.in_(['NIL', 'EXEMPT', 'NONGST'])).count(),
     }
 
-    gen_query = GSTR1Generation.query.filter_by(profile_id=profile_id)
+    gen_query = tenant_query(GSTR1Generation, profile_id)
     if return_period:
         gen_query = gen_query.filter_by(return_period=return_period)
     latest_gen = gen_query.order_by(GSTR1Generation.created_at.desc()).first()

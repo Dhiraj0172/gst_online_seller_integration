@@ -254,3 +254,40 @@ def log_profile_audit(
 
     return audit_entry
 
+def log_import_audit(
+    user_id: int,
+    import_history_id: int,
+    action: str,
+    old_data: Optional[Dict[str, Any]] = None,
+    new_data: Optional[Dict[str, Any]] = None,
+    reason: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    commit: bool = False
+) -> AuditLog:
+    """Log an audit entry for ImportHistory lifecycle events (e.g. REPROCESS)."""
+    normalized_action = action.strip().upper() if action else 'UPDATE'
+    resolved_ip = ip_address[:45] if ip_address else _get_remote_addr()
+    old_value = _safe_json_dumps(old_data) if old_data else None
+    new_value = _safe_json_dumps(new_data) if new_data else None
+
+    if not reason:
+        reason = f"{normalized_action} ImportHistory {import_history_id}"
+
+    audit_entry = AuditLog(
+        user_id=user_id,
+        entity_type='ImportHistory',
+        entity_id=import_history_id,
+        action=normalized_action[:20],
+        field_name='status',
+        old_value=old_value,
+        new_value=new_value,
+        reason=reason[:255],
+        ip_address=resolved_ip
+    )
+
+    from app.extensions import db
+    db.session.add(audit_entry)
+    if commit:
+        db.session.commit()
+
+    return audit_entry

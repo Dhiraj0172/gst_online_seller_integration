@@ -128,3 +128,30 @@ def test_reprocess_atomic_rollback_on_failure(app, db):
         
         old_tx = db.session.get(Transaction, tx.id)
         assert old_tx.is_deleted == False
+
+def test_reprocess_partial_success(app, db):
+    with app.app_context():
+        user, profile = _setup_test_data(db)
+        from app.services.import_service import process_import
+        
+        file_path = os.path.join(app.root_path, '..', 'tests', 'fixtures', 'custom_excel_sample.xlsx')
+        
+        # 1. First import. It might be COMPLETED or PARTIAL depending on previous tests.
+        res1 = process_import(file_path, profile.id, 'Custom Excel', user.id, '112026', '2026-27', allow_duplicate_file=True)
+        assert res1.status in ('COMPLETED', 'PARTIAL')
+        
+        # 2. Second import. This will definitively be PARTIAL because it duplicates res1.
+        res2 = process_import(file_path, profile.id, 'Custom Excel', user.id, '112026', '2026-27', allow_duplicate_file=True)
+        assert res2.status == 'PARTIAL'
+        assert res2.skipped_rows > 0
+        
+        # 3. Reprocess the second import. Should also yield PARTIAL and successfully commit.
+        res3 = reprocess_import(res2.import_history_id, profile.id, user.id)
+        assert res3.status == 'PARTIAL', f"Expected PARTIAL but got {res3.status}"
+        assert res3.skipped_rows > 0
+        
+        # Verify atomicity (commit)
+        new_ih = db.session.get(ImportHistory, res3.import_history_id)
+        assert new_ih is not None
+        assert new_ih.is_reprocessed == True
+        assert new_ih.processing_status == 'PARTIAL'

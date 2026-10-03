@@ -869,7 +869,7 @@ def reprocess_import(
             import_history_id=new_id,
             _internal_commit=False
         )
-        if res.status not in ('COMPLETED', 'PARTIAL_SUCCESS'):
+        if res.status not in ('COMPLETED', 'PARTIAL'):
             db.session.rollback()
         else:
             db.session.commit()

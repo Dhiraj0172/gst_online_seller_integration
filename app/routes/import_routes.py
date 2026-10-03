@@ -273,8 +273,9 @@ def reprocess(id):
 
     try:
         res = reprocess_import(id, profile.id, current_user.id)
-        if res.status == 'SUCCESS' or res.status == 'COMPLETED':
-            flash(f'Import {import_rec.file_name} reprocessed successfully.', 'success')
+        if res.status in ('COMPLETED', 'PARTIAL'):
+            status_text = 'successfully' if res.status == 'COMPLETED' else 'with partial success'
+            flash(f'Import {import_rec.file_name} reprocessed {status_text}.', 'success')
             log_import_audit(current_user.id, res.import_history_id or id, action='REPROCESS', commit=True)
         else:
             err_msg = res.errors[0] if res.errors else 'Unknown error'

@@ -215,64 +215,64 @@ class BaseGenericAdapter(PlatformAdapter):
     # source loading
     # ------------------------------------------------------------------
     def _load_sheets(self, workbook_or_data, file_name: str = ''):
-        """Return (sheets, file_name, load_errors, diagnostics)."""
+        """Return (sheets, file_name, load_errors, diagnostics, wb)."""
         if workbook_or_data is None:
-            return [], file_name, ['No workbook or data provided.'], {}
+            return [], file_name, ['No workbook or data provided.'], {}, None
 
         if isinstance(workbook_or_data, openpyxl.Workbook):
-            return list(self._sheets_from_workbook(workbook_or_data)), file_name, [], {}
+            return list(self._sheets_from_workbook(workbook_or_data)), file_name, [], {}, workbook_or_data
 
         if isinstance(workbook_or_data, (bytes, io.BytesIO)):
             try:
                 stream = io.BytesIO(workbook_or_data) if isinstance(workbook_or_data, bytes) else workbook_or_data
-                workbook = openpyxl.load_workbook(stream, data_only=True)
+                workbook = openpyxl.load_workbook(stream, data_only=True, read_only=True)
                 diagnostics = {'source_type': 'excel'}
-                return list(self._sheets_from_workbook(workbook)), file_name, [], diagnostics
+                return list(self._sheets_from_workbook(workbook)), file_name, [], diagnostics, workbook
             except Exception as exc:
-                return [], file_name, [f'Unsupported or unreadable file: {exc}'], {}
+                return [], file_name, [f'Unsupported or unreadable file: {exc}'], {}, None
 
         if isinstance(workbook_or_data, (list, tuple)):
             rows = list(workbook_or_data)
             if not rows:
-                return [], file_name, ['No data rows provided.'], {}
+                return [], file_name, ['No data rows provided.'], {}, None
             if isinstance(rows[0], dict):
                 headers = list(rows[0].keys())
                 data = [headers] + [[row.get(header) for header in headers] for row in rows]
-                return [SheetSource('Data', data)], file_name, [], {}
-            return [SheetSource('Data', rows)], file_name, [], {}
+                return [SheetSource('Data', data)], file_name, [], {}, None
+            return [SheetSource('Data', rows)], file_name, [], {}, None
 
         if isinstance(workbook_or_data, str):
             path = workbook_or_data
             file_name = file_name or os.path.basename(path)
             extension = os.path.splitext(path)[1].lower()
             if not os.path.exists(path):
-                return [], file_name, [f'File not found: {path}'], {}
+                return [], file_name, [f'File not found: {path}'], {}, None
             if extension == '.csv':
                 csv_result = read_csv_rows(path)
                 if csv_result.errors:
-                    return [], file_name, list(csv_result.errors), {}
+                    return [], file_name, list(csv_result.errors), {}, None
                 diagnostics = {
                     'source_type': 'csv',
                     'csv_encoding': csv_result.encoding,
                     'csv_delimiter': csv_result.delimiter_label,
                 }
-                return [SheetSource(os.path.basename(path), csv_result.rows)], file_name, [], diagnostics
+                return [SheetSource(os.path.basename(path), csv_result.rows)], file_name, [], diagnostics, None
             if extension not in ('.xlsx', '.xlsm', '.xltx'):
                 return [], file_name, [
                     f'Unsupported file type {extension or "(none)"}: expected an Excel '
                     f'(.xlsx/.xlsm) or .csv export.'
-                ], {}
+                ], {}, None
             try:
-                workbook = openpyxl.load_workbook(path, data_only=True)
+                workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
             except Exception as exc:
-                return [], file_name, [f'Unsupported or unreadable file {path}: {exc}'], {}
+                return [], file_name, [f'Unsupported or unreadable file {path}: {exc}'], {}, None
             diagnostics = {'source_type': 'excel'}
-            return list(self._sheets_from_workbook(workbook)), file_name, [], diagnostics
+            return list(self._sheets_from_workbook(workbook)), file_name, [], diagnostics, workbook
 
         return [], file_name, [
             f'Unsupported data type {type(workbook_or_data).__name__}: expected an '
             f'openpyxl Workbook, a .xlsx/.csv path, or a list of rows.'
-        ], {}
+        ], {}, None
 
     @staticmethod
     def _sheets_from_workbook(workbook: openpyxl.Workbook) -> Iterator[SheetSource]:
@@ -387,7 +387,7 @@ class BaseGenericAdapter(PlatformAdapter):
             return True
         if not self.SHEET_NAMES:
             return False
-        sheets, _name, errors, _diagnostics = self._load_sheets(workbook_or_data, file_name)
+        sheets, _name, errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data, file_name)
         if errors:
             return False
         preferred = {_key(sheet_name) for sheet_name in self.SHEET_NAMES}
@@ -397,7 +397,7 @@ class BaseGenericAdapter(PlatformAdapter):
     # validation
     # ------------------------------------------------------------------
     def validate(self, workbook_or_data) -> Tuple[bool, List[str]]:
-        sheets, _file_name, load_errors, _diagnostics = self._load_sheets(workbook_or_data)
+        sheets, _file_name, load_errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data)
         if load_errors:
             return False, list(load_errors)
         if not sheets:
@@ -457,13 +457,14 @@ class BaseGenericAdapter(PlatformAdapter):
     # ------------------------------------------------------------------
     # parsing
     # ------------------------------------------------------------------
-    def parse(self, workbook_or_data, file_name: str = '') -> ImportResult:
-        sheets, resolved_name, load_errors, diagnostics = self._load_sheets(workbook_or_data, file_name)
+    def parse(self, workbook_or_data, file_name: str = '', stream: bool = False) -> ImportResult:
+        sheets, resolved_name, load_errors, diagnostics, _wb_ref = self._load_sheets(workbook_or_data, file_name)
         result = ImportResult(platform=self.PLATFORM_NAME, file_name=resolved_name or '')
         result.sheet_count = len(sheets)
         result.metadata['platform'] = self.PLATFORM_NAME
         result.metadata['format_documented'] = self.FORMAT_DOCUMENTED
         result.metadata.update(diagnostics or {})
+        result.metadata["_wb_ref"] = _wb_ref
 
         if load_errors:
             result.errors.extend(load_errors)
@@ -482,33 +483,40 @@ class BaseGenericAdapter(PlatformAdapter):
 
         header_rows: Dict[str, int] = {}
         sheet_columns: Dict[str, List[str]] = {}
-        for sheet, header in usable:
-            header_rows[sheet.name] = header['row_number']
-            sheet_columns[sheet.name] = sorted(header['mapping'])
-            for row_number, row in self._iter_data_rows(sheet, header):
-                raw_data: Dict[str, Any] = {}
-                headers = header['headers']
-                for position in range(max(len(headers), len(row))):
-                    if position < len(headers):
-                        key = headers[position] or f'col_{position}'
-                    else:
-                        key = f'col_{position}'
-                    raw_data[key] = row[position] if position < len(row) else None
-                if len(row) > len(headers):
-                    # Values past the header columns are kept, never dropped.
-                    raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
-                row_object = self._build_import_row(raw_data, row_number, sheet.name)
-                result.rows.append(row_object)
-                if row_object.status is ImportRowStatus.ERROR:
+
+        def _row_generator():
+            for sheet, header in usable:
+                header_rows[sheet.name] = header['row_number']
+                sheet_columns[sheet.name] = sorted(header['mapping'])
+                for row_number, row in self._iter_data_rows(sheet, header):
+                    raw_data: Dict[str, Any] = {}
+                    headers = header['headers']
+                    for position in range(max(len(headers), len(row))):
+                        if position < len(headers):
+                            key = headers[position] or f'col_{position}'
+                        else:
+                            key = f'col_{position}'
+                        raw_data[key] = row[position] if position < len(row) else None
+                    if len(row) > len(headers):
+                        raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
+                    row_object = self._build_import_row(raw_data, row_number, sheet.name)
+                    yield row_object
+
+        result.rows = _row_generator()
+
+        if not stream:
+            result.rows = list(result.rows)
+            result.total_rows = len(result.rows)
+            for row_object in result.rows:
+                if row_object.status.name == 'ERROR':
                     result.error_rows += 1
-                elif row_object.status is ImportRowStatus.WARNING:
+                elif row_object.status.name == 'WARNING':
                     result.warning_rows += 1
-                elif row_object.status is ImportRowStatus.SKIPPED:
+                elif row_object.status.name == 'SKIPPED':
                     result.skipped_rows += 1
                 else:
                     result.success_rows += 1
 
-        result.total_rows = len(result.rows)
         result.metadata['header_rows'] = header_rows
         result.metadata['sheet_columns'] = sheet_columns
         result.metadata['sheets_parsed'] = list(header_rows)
@@ -526,6 +534,7 @@ class BaseGenericAdapter(PlatformAdapter):
         return result
 
     def _finalize_result(self, result: ImportResult) -> None:
+        if not isinstance(result.rows, list): return
         periods, gstins = Counter(), Counter()
         for row in result.rows:
             normalized = row.normalized_data or {}

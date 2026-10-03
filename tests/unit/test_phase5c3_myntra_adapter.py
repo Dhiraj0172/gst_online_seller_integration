@@ -600,7 +600,7 @@ class TestMyntraErrorHandling:
 # 5. Persistence, Duplicates, Tenant Isolation, and Rollback
 # ===========================================================================
 class TestMyntraDuplicatesAndPersistence:
-    def test_34_in_file_duplicate_rows_marked_skipped(self, app, db, myntra_tenants):
+    def test_34_in_file_duplicate_rows_marked_skipped(self, app, db, myntra_tenants, tmp_path):
         """Exact duplicate line item inside the same file is marked SKIPPED."""
         p1_id = myntra_tenants['profile1_id']
         u1_id = myntra_tenants['user1_id']
@@ -610,8 +610,9 @@ class TestMyntraDuplicatesAndPersistence:
             {'Order ID': 'O1', 'Order Item ID': 'OI-DUP', 'Invoice Number': 'I1', 'Taxable Value': 100, 'Invoice Date': '15-01-2025', 'Product Title': 'Item A', 'Selling Price': 100, 'Invoice Value': 118, 'Place of Supply': '27-Maharashtra', 'Supply Type': 'Regular'},
         ]
         wb = _make_myntra_workbook(rows)
-        path = os.path.join(FIXTURE_DIR, 'test_myntra_in_file_dup.xlsx')
+        path = str(tmp_path / 'test_myntra_in_file_dup.xlsx')
         wb.save(path)
+        wb.close()
         try:
             with app.app_context():
                 res = process_import(path, p1_id, 'Myntra', u1_id, '012025', '2024-25', allow_duplicate_file=True)
@@ -621,17 +622,21 @@ class TestMyntraDuplicatesAndPersistence:
                 assert res.skipped_rows == 1
         finally:
             if os.path.exists(path):
-                os.remove(path)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
-    def test_35_full_file_duplicate_reimport(self, app, db, myntra_tenants):
+    def test_35_full_file_duplicate_reimport(self, app, db, myntra_tenants, tmp_path):
         """Re-importing the same file without allow_duplicate_file is rejected as REJECTED_DUPLICATE_FILE."""
         p1_id = myntra_tenants['profile1_id']
         u1_id = myntra_tenants['user1_id']
 
         rows = [{'Order ID': 'O-RE', 'Order Item ID': 'OI-RE', 'Invoice Number': 'INV-RE', 'Taxable Value': 200, 'Invoice Date': '15-01-2025', 'Product Title': 'Item Re', 'Selling Price': 200, 'Invoice Value': 236, 'Place of Supply': '27-Maharashtra', 'Supply Type': 'Regular'}]
         wb = _make_myntra_workbook(rows)
-        path = os.path.join(FIXTURE_DIR, 'test_myntra_reimport.xlsx')
+        path = str(tmp_path / 'test_myntra_reimport.xlsx')
         wb.save(path)
+        wb.close()
         try:
             with app.app_context():
                 res1 = process_import(path, p1_id, 'Myntra', u1_id, '012025', '2024-25', allow_duplicate_file=False)
@@ -641,7 +646,10 @@ class TestMyntraDuplicatesAndPersistence:
                 assert res2.status == 'REJECTED_DUPLICATE_FILE'
         finally:
             if os.path.exists(path):
-                os.remove(path)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
     def test_36_real_database_persistence_and_reconciliation(self, app, db, myntra_tenants):
         """Verify real database persistence of Myntra transactions and exact taxable sum."""
@@ -665,7 +673,7 @@ class TestMyntraDuplicatesAndPersistence:
             raw_imports = RawImport.query.filter_by(import_history_id=res.import_history_id).all()
             assert len(raw_imports) == 118
 
-    def test_37_tenant_isolation(self, app, db, myntra_tenants):
+    def test_37_tenant_isolation(self, app, db, myntra_tenants, tmp_path):
         """Verify strict tenant isolation between profiles."""
         p1_id = myntra_tenants['profile1_id']
         p2_id = myntra_tenants['profile2_id']
@@ -677,10 +685,12 @@ class TestMyntraDuplicatesAndPersistence:
 
         wb1 = _make_myntra_workbook(rows1)
         wb2 = _make_myntra_workbook(rows2)
-        path1 = os.path.join(FIXTURE_DIR, 'test_tenant1.xlsx')
-        path2 = os.path.join(FIXTURE_DIR, 'test_tenant2.xlsx')
+        path1 = str(tmp_path / 'test_tenant1.xlsx')
+        path2 = str(tmp_path / 'test_tenant2.xlsx')
         wb1.save(path1)
+        wb1.close()
         wb2.save(path2)
+        wb2.close()
         try:
             with app.app_context():
                 process_import(path1, p1_id, 'Myntra', u1_id, '012025', '2024-25', allow_duplicate_file=True)
@@ -696,9 +706,12 @@ class TestMyntraDuplicatesAndPersistence:
         finally:
             for p in (path1, path2):
                 if os.path.exists(p):
-                    os.remove(p)
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
-    def test_38_batch_boundary_rollback(self, app, db, myntra_tenants):
+    def test_38_batch_boundary_rollback(self, app, db, myntra_tenants, tmp_path):
         """Mandatory >1000-row batch boundary rollback test.
 
         Verifies:
@@ -721,8 +734,9 @@ class TestMyntraDuplicatesAndPersistence:
             'Supply Type': 'Regular',
         }]
         wb_p2 = _make_myntra_workbook(p2_row)
-        path_p2 = os.path.join(FIXTURE_DIR, 'test_batch_seed_p2_myntra.xlsx')
+        path_p2 = str(tmp_path / 'test_batch_seed_p2_myntra.xlsx')
         wb_p2.save(path_p2)
+        wb_p2.close()
 
         # Generate 1050 rows crossing the 1000-row batch boundary
         rows_1050 = []
@@ -740,8 +754,9 @@ class TestMyntraDuplicatesAndPersistence:
                 'Supply Type': 'Regular',
             })
         wb_batch = _make_myntra_workbook(rows_1050)
-        path_batch = os.path.join(FIXTURE_DIR, 'test_myntra_batch_1050.xlsx')
+        path_batch = str(tmp_path / 'test_myntra_batch_1050.xlsx')
         wb_batch.save(path_batch)
+        wb_batch.close()
 
         try:
             with app.app_context():
@@ -793,7 +808,10 @@ class TestMyntraDuplicatesAndPersistence:
         finally:
             for p in (path_p2, path_batch):
                 if os.path.exists(p):
-                    os.remove(p)
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
     def test_39_registry_determinism(self):
         """Verify registry precedence and deterministic adapter resolution for Myntra."""

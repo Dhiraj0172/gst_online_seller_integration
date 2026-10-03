@@ -2,8 +2,11 @@ from flask import render_template, redirect, url_for, flash, request, session, c
 from flask_login import login_required, current_user
 from app.models import GSTProfile
 from app.utils.state_codes import get_state_name
+from app.utils.gstin_validator import validate_gstin
+from app.services.audit_service import log_profile_audit
 from app.extensions import db
 from . import profile_bp
+from .auth import is_safe_redirect_url
 
 @profile_bp.route('/profiles')
 @login_required
@@ -35,6 +38,25 @@ def create():
                 filing_frequency=frequency
             )
             db.session.add(profile)
+            db.session.flush()
+
+            log_profile_audit(
+                user_id=current_user.id,
+                profile_id=profile.id,
+                action='CREATE',
+                old_data=None,
+                new_data={
+                    "gstin": profile.gstin,
+                    "legal_name": profile.legal_name,
+                    "trade_name": profile.trade_name,
+                    "state_code": profile.state_code,
+                    "state_name": profile.state_name,
+                    "filing_frequency": profile.filing_frequency,
+                    "financial_year": profile.financial_year
+                },
+                reason=f"Created profile {profile.legal_name} ({profile.gstin})"
+            )
+
             db.session.commit()
             session['active_profile_id'] = profile.id
             flash('Profile created successfully', 'success')
@@ -54,7 +76,24 @@ def edit(id):
     
     if request.method == 'POST':
         try:
-            gstin = (request.form.get('gstin') or profile.gstin).strip().upper()
+            submitted_gstin = request.form.get('gstin')
+            gstin = (submitted_gstin or profile.gstin).strip().upper()
+
+            is_valid, msg = validate_gstin(gstin)
+            if not is_valid:
+                flash(f'Invalid GSTIN: {msg}', 'danger')
+                profiles = GSTProfile.query.filter_by(user_id=current_user.id).all()
+                return render_template('profile.html', profiles=profiles, profile=profile), 400
+
+            old_data = {
+                "gstin": profile.gstin,
+                "legal_name": profile.legal_name,
+                "trade_name": profile.trade_name,
+                "state_code": profile.state_code,
+                "state_name": profile.state_name,
+                "filing_frequency": profile.filing_frequency
+            }
+
             profile.gstin = gstin
             profile.legal_name = request.form.get('legal_name') or profile.legal_name
             profile.trade_name = request.form.get('trade_name') or profile.trade_name
@@ -62,6 +101,25 @@ def edit(id):
             profile.state_code = state_code
             profile.state_name = get_state_name(state_code) or profile.state_name
             profile.filing_frequency = request.form.get('frequency') or profile.filing_frequency
+
+            new_data = {
+                "gstin": profile.gstin,
+                "legal_name": profile.legal_name,
+                "trade_name": profile.trade_name,
+                "state_code": profile.state_code,
+                "state_name": profile.state_name,
+                "filing_frequency": profile.filing_frequency
+            }
+
+            log_profile_audit(
+                user_id=current_user.id,
+                profile_id=profile.id,
+                action='UPDATE',
+                old_data=old_data,
+                new_data=new_data,
+                reason=f"Updated profile {profile.legal_name} ({profile.gstin})"
+            )
+
             db.session.commit()
             flash('Profile updated successfully', 'success')
             return redirect(url_for('profile.list_profiles'))
@@ -80,6 +138,22 @@ def delete(id):
     try:
         if str(session.get('active_profile_id')) == str(id):
             session.pop('active_profile_id', None)
+
+        old_data = {
+            "gstin": profile.gstin,
+            "legal_name": profile.legal_name,
+            "trade_name": profile.trade_name,
+            "state_code": profile.state_code,
+            "state_name": profile.state_name
+        }
+        log_profile_audit(
+            user_id=current_user.id,
+            profile_id=profile.id,
+            action='DELETE',
+            old_data=old_data,
+            new_data=None,
+            reason=f"Deleted profile {profile.legal_name} ({profile.gstin})"
+        )
         db.session.delete(profile)
         db.session.commit()
         flash('Profile deleted successfully', 'success')
@@ -95,4 +169,7 @@ def select(id):
     profile = GSTProfile.query.filter_by(id=id, user_id=current_user.id).first_or_404()
     session['active_profile_id'] = profile.id
     flash(f'Active profile set to {profile.legal_name} ({profile.gstin})', 'success')
-    return redirect(request.referrer or url_for('main.dashboard'))
+    target = request.args.get('next') or request.referrer
+    if target and is_safe_redirect_url(target):
+        return redirect(target)
+    return redirect(url_for('main.dashboard'))

@@ -226,24 +226,29 @@ class TestGSTR1GovtWebWorkflow:
         stmt_res = client.get('/statement')
         assert stmt_res.status_code == 200
 
-        # 4. Generate GSTR-1 via web route
-        gen_res = client.post('/generate/run', data={'return_period': '012025'}, follow_redirects=True)
-        assert gen_res.status_code == 200
+        # 4. Generate GSTR-1 via web route:
+        # gstr1_sample.xlsx contains intentional tax discrepancies and impossible combos.
+        # Under Phase 5E-3.1 gate hardening, the server-authoritative reconciliation gate
+        # blocks generation and redirects to validation errors.
+        gen_res = client.post('/generate/run', data={'return_period': '012025'}, follow_redirects=False)
+        assert gen_res.status_code == 302
+        assert '/statement/validation-errors' in gen_res.headers['Location']
+        assert 'return_period=012025' in gen_res.headers['Location']
 
+        # Follow redirect and verify blocking flash message
+        redir_res = client.get(gen_res.headers['Location'])
+        assert redir_res.status_code == 200
+        assert b'GSTR-1 generation is blocked' in redir_res.data
+
+        # Verify no generation record was created in the database
         with app.app_context():
             from app.models import GSTR1Generation
             generation = GSTR1Generation.query.filter_by(profile_id=profile_id).first()
-            assert generation is not None
-            assert generation.generation_status == 'COMPLETED'
-            assert os.path.exists(generation.excel_file_path)
-            assert os.path.exists(generation.json_file_path)
-            gen_id = generation.id
+            assert generation is None
 
-        # 5. Verify download routes for Excel and JSON
-        excel_dl = client.get(f'/generate/download/excel/{gen_id}')
-        assert excel_dl.status_code == 200
-        assert len(excel_dl.data) > 0
+        # 5. Verify download routes return 404 for ungenerated / non-existent generation ID
+        excel_dl = client.get('/generate/download/excel/99999')
+        assert excel_dl.status_code == 404
 
-        json_dl = client.get(f'/generate/download/json/{gen_id}')
-        assert json_dl.status_code == 200
-        assert len(json_dl.data) > 0
+        json_dl = client.get('/generate/download/json/99999')
+        assert json_dl.status_code == 404

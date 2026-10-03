@@ -131,7 +131,7 @@ class MeeshoAdapter(BaseMeeshoAdapter):
         if workbook_or_data is None:
             return any(token in name for token in self.FILENAME_TOKENS)
 
-        sheets, _name, errors, _diagnostics = self._load_sheets(workbook_or_data, file_name)
+        sheets, _name, errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data, file_name)
         if errors or not sheets:
             return False
 
@@ -235,7 +235,7 @@ class MeeshoAdapter(BaseMeeshoAdapter):
         if workbook_or_data is None:
             return False, ['No workbook or data provided.']
 
-        sheets, _file_name, load_errors, _diagnostics = self._load_sheets(workbook_or_data)
+        sheets, _file_name, load_errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data)
         if load_errors:
             return False, list(load_errors)
         if not sheets:
@@ -277,14 +277,15 @@ class MeeshoAdapter(BaseMeeshoAdapter):
     # ------------------------------------------------------------------
     # Step 4: Meesho Row Parsing & Canonicalization
     # ------------------------------------------------------------------
-    def parse(self, workbook_or_data, file_name: str = '') -> ImportResult:
+    def parse(self, workbook_or_data, file_name: str = '', stream: bool = False) -> ImportResult:
         """Parse Meesho orders report into ImportResult containing canonical rows."""
-        sheets, resolved_name, load_errors, diagnostics = self._load_sheets(workbook_or_data, file_name)
+        sheets, resolved_name, load_errors, diagnostics, _wb_ref = self._load_sheets(workbook_or_data, file_name)
         result = ImportResult(platform=self.PLATFORM_NAME, file_name=resolved_name or '')
         result.sheet_count = len(sheets)
         result.metadata['platform'] = self.PLATFORM_NAME
         result.metadata['format_documented'] = self.FORMAT_DOCUMENTED
         result.metadata.update(diagnostics or {})
+        result.metadata["_wb_ref"] = _wb_ref
 
         if load_errors:
             result.errors.extend(load_errors)
@@ -311,30 +312,40 @@ class MeeshoAdapter(BaseMeeshoAdapter):
         sheet_columns = {target_sheet.name: sorted(header['mapping'])}
         headers = header['headers']
 
-        for row_number, row in self._iter_data_rows(target_sheet, header):
-            raw_data: Dict[str, Any] = {}
-            for position in range(max(len(headers), len(row))):
-                if position < len(headers):
-                    key = headers[position] or f'col_{position}'
+        def _row_generator():
+            for row_number, row in self._iter_data_rows(target_sheet, header):
+                raw_data: Dict[str, Any] = {}
+                for position in range(max(len(headers), len(row))):
+                    if position < len(headers):
+                        key = headers[position] or f'col_{position}'
+                    else:
+                        key = f'col_{position}'
+                    raw_data[key] = row[position] if position < len(row) else None
+                if len(row) > len(headers):
+                    raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
+
+                row_object = self._build_import_row(raw_data, row_number, target_sheet.name)
+                yield row_object
+
+        result.rows = _row_generator()
+
+        if not stream:
+            result.rows = list(result.rows)
+            result.total_rows = len(result.rows)
+            for row_object in result.rows:
+                if row_object.status is ImportRowStatus.ERROR:
+                    result.error_rows += 1
+                elif row_object.status is ImportRowStatus.WARNING:
+                    result.warning_rows += 1
+                elif row_object.status is ImportRowStatus.SKIPPED:
+                    result.skipped_rows += 1
                 else:
-                    key = f'col_{position}'
-                raw_data[key] = row[position] if position < len(row) else None
-            if len(row) > len(headers):
-                raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
+                    result.success_rows += 1
 
-            row_object = self._build_import_row(raw_data, row_number, target_sheet.name)
-            result.rows.append(row_object)
-            if row_object.status is ImportRowStatus.ERROR:
-                result.error_rows += 1
-            elif row_object.status is ImportRowStatus.WARNING:
-                result.warning_rows += 1
-            elif row_object.status is ImportRowStatus.SKIPPED:
-                result.skipped_rows += 1
-            else:
-                result.success_rows += 1
-
-        result.total_rows = len(result.rows)
         result.metadata['header_rows'] = header_rows
+        result.metadata['sheet_columns'] = sheet_columns
+        result.metadata['sheets_parsed'] = list(header_rows)
+        result.metadata['columns_found'] = sheet_columns
         result.metadata['sheet_columns'] = sheet_columns
         result.metadata['sheets_parsed'] = [target_sheet.name]
         result.metadata['unrecognized_headers'] = sorted(set(header['unknown_headers']))

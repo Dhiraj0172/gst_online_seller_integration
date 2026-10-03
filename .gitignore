@@ -14,7 +14,7 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
-.pytest_cache/
+tests/fixtures/test_*.xlsx
 
 # Logs
 logs/

@@ -31,6 +31,10 @@ def db(app):
         _db.create_all()
         yield _db
         _db.session.rollback()
+        for table in reversed(_db.metadata.sorted_tables):
+            _db.session.execute(table.delete())
+        _db.session.commit()
+        _db.session.remove()
 
 
 @pytest.fixture
@@ -60,3 +64,35 @@ def auth_client(app, db):
 def fixture_dir():
     """Path to test fixtures directory."""
     return os.path.join(os.path.dirname(__file__), 'fixtures')
+
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers", "no_request_context: mark test to run without Flask request context"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _push_request_context(request):
+    """During tests execution request context has been pushed.
+
+    Honors no_request_context marker to allow testing offline/CLI code outside request context.
+    """
+    if "app" not in request.fixturenames:
+        return
+
+    if request.node.get_closest_marker("no_request_context"):
+        return
+
+    app = request.getfixturevalue("app")
+    if "live_server" in request.fixturenames:
+        app = request.getfixturevalue("live_server").app
+
+    ctx = app.test_request_context()
+    ctx.push()
+
+    def teardown():
+        ctx.pop()
+
+    request.addfinalizer(teardown)

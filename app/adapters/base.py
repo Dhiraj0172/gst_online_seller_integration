@@ -1,6 +1,6 @@
 import datetime
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from decimal import Decimal
@@ -42,7 +42,7 @@ class ImportResult:
     warning_rows: int = 0
     error_rows: int = 0
     skipped_rows: int = 0
-    rows: List[ImportRow] = field(default_factory=list)
+    rows: Iterable[ImportRow] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     detected_period: Optional[str] = None
@@ -84,7 +84,7 @@ class PlatformAdapter(ABC):
         pass
 
     @abstractmethod
-    def parse(self, workbook_or_data, file_name: str = '') -> ImportResult:
+    def parse(self, workbook_or_data, file_name: str = '', stream: bool = False) -> ImportResult:
         """Parse the entire file into an ImportResult with canonical rows."""
         pass
 

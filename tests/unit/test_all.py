@@ -619,7 +619,7 @@ from app.services.gstr1_generator import generate_gstr1
 
 class TestGSTR1Generator:
     def test_generate_empty(self):
-        result = generate_gstr1('test_profile', '012025')
+        result = generate_gstr1('test_profile', '012025', reconciliation_report={'status': 'SUCCESS'})
         assert result is not None
         assert result.excel_path is not None
         assert result.json_path is not None
@@ -627,13 +627,13 @@ class TestGSTR1Generator:
         assert os.path.exists(result.json_path)
 
     def test_excel_opens(self):
-        result = generate_gstr1('test_profile', '012025')
+        result = generate_gstr1('test_profile', '012025', reconciliation_report={'status': 'SUCCESS'})
         wb = openpyxl.load_workbook(result.excel_path)
         assert len(wb.sheetnames) >= 1
         wb.close()
 
     def test_json_parses(self):
-        result = generate_gstr1('test_profile', '012025')
+        result = generate_gstr1('test_profile', '012025', reconciliation_report={'status': 'SUCCESS'})
         with open(result.json_path, 'r') as f:
             data = json.load(f)
         assert 'gstin' in data

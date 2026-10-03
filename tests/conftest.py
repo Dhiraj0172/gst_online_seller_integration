@@ -31,6 +31,10 @@ def db(app):
         _db.create_all()
         yield _db
         _db.session.rollback()
+        for table in reversed(_db.metadata.sorted_tables):
+            _db.session.execute(table.delete())
+        _db.session.commit()
+        _db.session.remove()
 
 
 @pytest.fixture

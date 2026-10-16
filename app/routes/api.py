@@ -11,6 +11,7 @@ from app.services.reconciliation_service import run_full_reconciliation
 from app.services.validation_service import get_pre_filing_review, get_validation_issues
 from app.services.gstr1_generator import generate_gstr1, GenerationBlockedError
 from app.services.audit_service import log_generation_audit
+from app.utils.query import tenant_query
 from . import api_bp
 
 def get_active_profile_id():
@@ -63,7 +64,7 @@ def get_active_return_period(profile_id=None):
 
     if profile_id:
         latest_imp = (
-            ImportHistory.query.filter_by(profile_id=profile_id)
+            tenant_query(ImportHistory, profile_id)
             .order_by(ImportHistory.created_at.desc())
             .first()
         )
@@ -107,7 +108,6 @@ def dashboard_stats():
         })
 
     return_period = get_active_return_period(profile_id)
-    from app.utils.query import tenant_query
     tx_query = (
         tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
@@ -213,11 +213,9 @@ def _get_section_transactions(tx_type):
     search = request.args.get('search', '').strip()
 
     query = (
-        db.session.query(Transaction)
+        tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
-            Transaction.profile_id == profile_id,
-            Transaction.is_deleted == False,
             ImportHistory.return_period == return_period,
         )
     )
@@ -359,7 +357,7 @@ def import_history():
     if not profile_id:
         return api_response([], total=0, pages=0, page=page, per_page=per_page)
 
-    query = ImportHistory.query.filter_by(profile_id=profile_id, user_id=current_user.id)
+    query = tenant_query(ImportHistory, profile_id).filter_by(user_id=current_user.id)
     return_period = request.args.get('return_period')
     if return_period:
         query = query.filter_by(return_period=return_period)
@@ -422,7 +420,7 @@ def tcs_reconciliation():
     if not profile_id:
         return api_response([], total=0, pages=0, page=page, per_page=per_page)
 
-    query = TCSReconciliation.query.filter_by(profile_id=profile_id, user_id=current_user.id)
+    query = tenant_query(TCSReconciliation, profile_id).filter_by(user_id=current_user.id)
     return_period = request.args.get('return_period')
     if return_period:
         query = query.filter_by(return_period=return_period)
@@ -487,9 +485,9 @@ def audit_logs():
         query = query.filter(AuditLog.action == action.upper())
 
     if profile_id:
-        gen_ids = db.session.query(GSTR1Generation.id).filter_by(profile_id=profile_id)
-        tx_ids = db.session.query(Transaction.id).filter_by(profile_id=profile_id)
-        tcs_ids = db.session.query(TCSReconciliation.id).filter_by(profile_id=profile_id)
+        gen_ids = tenant_query(GSTR1Generation, profile_id).with_entities(GSTR1Generation.id)
+        tx_ids = tenant_query(Transaction, profile_id).with_entities(Transaction.id)
+        tcs_ids = tenant_query(TCSReconciliation, profile_id).with_entities(TCSReconciliation.id)
 
         profile_condition = (
             (AuditLog.entity_type == 'GSTR1Generation') & (AuditLog.entity_id.in_(gen_ids)) |
@@ -500,21 +498,23 @@ def audit_logs():
         query = query.filter(profile_condition)
 
     if return_period:
-        rp_gen_ids = db.session.query(GSTR1Generation.id).filter(
-            GSTR1Generation.profile_id == profile_id if profile_id else True,
-            GSTR1Generation.return_period == return_period
+        rp_gen_ids = (
+            tenant_query(GSTR1Generation, profile_id).filter_by(return_period=return_period).with_entities(GSTR1Generation.id)
+            if profile_id else
+            db.session.query(GSTR1Generation.id).filter(GSTR1Generation.return_period == return_period)
         )
         rp_tx_ids = (
-            db.session.query(Transaction.id)
+            (tenant_query(Transaction, profile_id) if profile_id else Transaction.query)
             .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
             .filter(
-                Transaction.profile_id == profile_id if profile_id else True,
                 ImportHistory.return_period == return_period
             )
+            .with_entities(Transaction.id)
         )
-        rp_tcs_ids = db.session.query(TCSReconciliation.id).filter(
-            TCSReconciliation.profile_id == profile_id if profile_id else True,
-            TCSReconciliation.return_period == return_period
+        rp_tcs_ids = (
+            tenant_query(TCSReconciliation, profile_id).filter_by(return_period=return_period).with_entities(TCSReconciliation.id)
+            if profile_id else
+            db.session.query(TCSReconciliation.id).filter(TCSReconciliation.return_period == return_period)
         )
 
         rp_condition = (
@@ -780,7 +780,7 @@ def api_list_generations():
         return api_response([])
 
     return_period = request.args.get('return_period')
-    q = GSTR1Generation.query.filter_by(profile_id=profile_id)
+    q = tenant_query(GSTR1Generation, profile_id)
     if return_period:
         q = q.filter_by(return_period=return_period)
 
@@ -824,7 +824,7 @@ def api_get_generation(id):
     if not profile_id:
         return api_response(error=True, message="Active profile not found", status=404)
 
-    gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile_id).first()
+    gen = tenant_query(GSTR1Generation, profile_id).filter_by(id=id).first()
     if not gen:
         return api_response(error=True, message="Generation record not found", status=404)
 

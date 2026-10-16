@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from app.extensions import db
 from app.models import GSTProfile, ImportHistory, RawImport, Transaction
 from app.services.gstr1_generator import load_transactions
+from app.utils.query import tenant_query
 from app.utils.state_codes import STATE_CODES
 from app.utils.tax_calculator import (
     calculate_cess,
@@ -101,10 +102,9 @@ class ReconciliationReport:
 def _get_active_transactions(profile_id: int, return_period: str) -> List[Transaction]:
     """Retrieve all non-deleted transactions strictly scoped to a profile and return period."""
     return (
-        db.session.query(Transaction)
+        tenant_query(Transaction, int(profile_id))
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
-            Transaction.profile_id == int(profile_id),
             Transaction.is_deleted == False,
             ImportHistory.return_period == str(return_period),
         )
@@ -131,11 +131,10 @@ def check_import_counts(profile_id: int, return_period: str) -> CheckResult:
     # 1. Orphaned transactions check (BLOCKING)
     # Transactions for this profile where import_history_id is missing or points to a non-existent import_history
     orphans = (
-        db.session.query(Transaction)
+        tenant_query(Transaction, pid)
         .filter(
-            Transaction.profile_id == pid,
             Transaction.is_deleted == False,
-            ~Transaction.import_history_id.in_(db.session.query(ImportHistory.id)),
+            ~Transaction.import_history_id.in_(tenant_query(ImportHistory, pid).with_entities(ImportHistory.id)),
         )
         .all()
     )
@@ -148,10 +147,9 @@ def check_import_counts(profile_id: int, return_period: str) -> CheckResult:
 
     # 2. RawImport linkage check
     unlinked_raw = (
-        db.session.query(Transaction)
+        tenant_query(Transaction, pid)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
-            Transaction.profile_id == pid,
             Transaction.is_deleted == False,
             ImportHistory.return_period == rp,
             Transaction.raw_import_id.is_(None),
@@ -168,7 +166,8 @@ def check_import_counts(profile_id: int, return_period: str) -> CheckResult:
 
     # 3. ImportHistory count reconciliation
     imports = (
-        ImportHistory.query.filter_by(profile_id=pid, return_period=rp)
+        tenant_query(ImportHistory, pid)
+        .filter_by(return_period=rp)
         .order_by(ImportHistory.created_at.asc())
         .all()
     )
@@ -195,9 +194,8 @@ def check_import_counts(profile_id: int, return_period: str) -> CheckResult:
         total_errors += imp.error_rows or 0
 
     total_persisted_in_db = (
-        db.session.query(Transaction)
+        tenant_query(Transaction, pid)
         .filter(
-            Transaction.profile_id == pid,
             Transaction.import_history_id.in_([imp.id for imp in imports]),
         )
         .count()
@@ -815,8 +813,7 @@ def check_state_totals(profile_id: int, return_period: str) -> CheckResult:
 
 def check_duplicates(profile_id: int, return_period: str = None) -> CheckResult:
     """Report active transactions that share the same business fingerprint within profile/period."""
-    query = Transaction.query.filter(
-        Transaction.profile_id == int(profile_id),
+    query = tenant_query(Transaction, int(profile_id)).filter(
         Transaction.is_deleted.is_(False),
         Transaction.row_fingerprint.isnot(None),
     )
@@ -844,8 +841,7 @@ def check_duplicates(profile_id: int, return_period: str = None) -> CheckResult:
             f'(invoice/document {invoices or "n/a"})'
         )
 
-    unf_query = Transaction.query.filter(
-        Transaction.profile_id == int(profile_id),
+    unf_query = tenant_query(Transaction, int(profile_id)).filter(
         Transaction.is_deleted.is_(False),
         Transaction.row_fingerprint.is_(None),
     )

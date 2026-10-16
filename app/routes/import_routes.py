@@ -22,6 +22,7 @@ from app.services.duplicate_service import (
 from app.utils.csv_utils import read_csv_rows
 from app.utils.date_utils import parse_date
 from app.utils.state_codes import resolve_pos_code
+from app.utils.query import tenant_query
 from app.extensions import db
 from . import import_bp
 
@@ -218,7 +219,7 @@ def history():
         flash('Please select an active profile first', 'warning')
         return redirect(url_for('profile.list_profiles'))
         
-    history_list = ImportHistory.query.filter_by(profile_id=profile.id).order_by(ImportHistory.created_at.desc()).all()
+    history_list = tenant_query(ImportHistory, profile.id).order_by(ImportHistory.created_at.desc()).all()
     return render_template('import_history.html', history=history_list, reports=_import_reports(history_list))
 
 
@@ -257,7 +258,7 @@ def detail(id):
     profile = get_active_profile()
     if not profile:
         return redirect(url_for('profile.list_profiles'))
-    import_rec = ImportHistory.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    import_rec = tenant_query(ImportHistory, profile.id).filter_by(id=id).first_or_404()
     return render_template('import_history.html', history=[import_rec], reports=_import_reports([import_rec]))
 
 @import_bp.route('/import/<int:id>/reprocess', methods=['POST'])
@@ -266,7 +267,7 @@ def reprocess(id):
     profile = get_active_profile()
     if not profile:
         return redirect(url_for('profile.list_profiles'))
-    import_rec = ImportHistory.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    import_rec = tenant_query(ImportHistory, profile.id).filter_by(id=id).first_or_404()
     
     from app.services.import_service import reprocess_import
     from app.services.audit_service import log_import_audit
@@ -293,7 +294,7 @@ def download_original(id):
     profile = get_active_profile()
     if not profile:
         return redirect(url_for('profile.list_profiles'))
-    import_rec = ImportHistory.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    import_rec = tenant_query(ImportHistory, profile.id).filter_by(id=id).first_or_404()
     if import_rec.raw_file_path and os.path.exists(import_rec.raw_file_path):
         return send_file(import_rec.raw_file_path, as_attachment=True, download_name=import_rec.file_name)
     flash('Original file not found on disk', 'warning')

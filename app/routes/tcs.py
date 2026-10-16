@@ -2,6 +2,7 @@ from flask import render_template, request, session, flash, redirect, url_for, j
 from flask_login import login_required, current_user
 from app.models import TCSReconciliation, GSTProfile, AuditLog
 from app.extensions import db
+from app.utils.query import tenant_query
 from app.services.tcs_service import import_tcs_report, reconcile_tcs, apply_adjustment, export_reconciliation
 from app.utils.date_utils import validate_return_period
 from . import tcs_bp
@@ -43,10 +44,9 @@ def index():
     reconciliations = []
     if profile:
         from app.services.tcs_service import reconcile_tcs
-        # Just fetch stored data for display
-        reconciliations = TCSReconciliation.query.filter_by(
-            profile_id=profile.id
-        ).order_by(TCSReconciliation.return_period.desc(), TCSReconciliation.state_code).all()
+        reconciliations = tenant_query(TCSReconciliation, profile.id).order_by(
+            TCSReconciliation.return_period.desc(), TCSReconciliation.state_code
+        ).all()
 
     return render_template('tcs_reconcile.html', reconciliations=reconciliations, profile=profile)
 
@@ -190,7 +190,7 @@ def adjust(id):
     if not profile:
         abort(404)
 
-    recon = TCSReconciliation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    recon = tenant_query(TCSReconciliation, profile.id).filter_by(id=id).first_or_404()
 
     adjustment_type = request.form.get('adjustment_type')
     notes = request.form.get('notes', '')
@@ -243,8 +243,7 @@ def api_data():
     if not return_period:
         return jsonify({'error': 'Return period required'}), 400
 
-    reconciliations = TCSReconciliation.query.filter_by(
-        profile_id=profile.id,
+    reconciliations = tenant_query(TCSReconciliation, profile.id).filter_by(
         return_period=return_period
     ).order_by(TCSReconciliation.state_code).all()
 

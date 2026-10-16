@@ -3,6 +3,7 @@ from decimal import Decimal
 from app.services.b2b_service import ValidationResult
 from app.models import Transaction, GSTProfile
 from app.extensions import db
+from app.utils.query import tenant_query
 from datetime import datetime
 
 
@@ -23,8 +24,7 @@ def get_ecom_supplies(profile_id: int, return_period: str, include_undated: bool
     else:
         end_date = start_date.replace(month=period_date.month + 1)
 
-    query = Transaction.query.filter(
-        Transaction.profile_id == profile_id,
+    query = tenant_query(Transaction, profile_id).filter(
         Transaction.ecommerce_gstin.isnot(None),
         Transaction.is_deleted == False
     )

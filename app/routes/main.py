@@ -3,6 +3,7 @@ from flask_login import login_required, current_user
 from sqlalchemy import func
 from app.extensions import db
 from app.models import GSTProfile, Transaction, ImportHistory, GSTR1Generation
+from app.utils.query import tenant_query
 from . import main_bp
 
 def _get_active_profile():
@@ -45,7 +46,7 @@ def get_active_return_period(profile_id=None):
 
     if profile_id:
         latest_imp = (
-            ImportHistory.query.filter_by(profile_id=profile_id)
+            tenant_query(ImportHistory, profile_id)
             .order_by(ImportHistory.created_at.desc())
             .first()
         )
@@ -77,7 +78,7 @@ def dashboard():
     if profile:
         return_period = get_active_return_period(profile.id)
         tx_query = (
-            Transaction.query.filter_by(profile_id=profile.id, is_deleted=False)
+            tenant_query(Transaction, profile.id).filter_by(is_deleted=False)
             .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
             .filter(ImportHistory.return_period == return_period)
         )
@@ -104,7 +105,7 @@ def dashboard():
         breakdown['nil'] = tx_query.filter(Transaction.supply_type.in_(['NIL', 'EXEMPT', 'NONGST'])).count()
 
         # Phase 5E-4: Query latest GSTR1Generation for active profile to determine real gstr1_status
-        gen_query = GSTR1Generation.query.filter_by(profile_id=profile.id)
+        gen_query = tenant_query(GSTR1Generation, profile.id)
         rp_filter = request.args.get('return_period') or request.args.get('period')
         if rp_filter:
             gen_query = gen_query.filter_by(return_period=rp_filter)
@@ -117,8 +118,8 @@ def dashboard():
     available_periods = []
     if profile:
         rows = (
-            db.session.query(ImportHistory.return_period)
-            .filter_by(profile_id=profile.id)
+            tenant_query(ImportHistory, profile.id)
+            .with_entities(ImportHistory.return_period)
             .distinct()
             .order_by(ImportHistory.return_period.desc())
             .all()
@@ -145,9 +146,7 @@ def downloads():
     profile = _get_active_profile()
     generations = []
     if profile:
-        generations = GSTR1Generation.query.filter_by(
-            profile_id=profile.id
-        ).order_by(GSTR1Generation.created_at.desc()).all()
+        generations = tenant_query(GSTR1Generation, profile.id).order_by(GSTR1Generation.created_at.desc()).all()
     return render_template('downloads.html', generations=generations)
 
 @main_bp.route('/errors')

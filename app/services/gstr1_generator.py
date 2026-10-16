@@ -7,6 +7,7 @@ from collections import defaultdict
 
 from app.extensions import db
 from app.models import Transaction, GSTProfile, ImportHistory
+from app.utils.query import tenant_query
 from app.services.gstr1_excel_writer import generate_gstr1_excel
 from app.services.gstr1_json_writer import generate_gstr1_json
 from app.services.gstr1_json_validator import GSTR1Validator, ValidationResult
@@ -56,10 +57,9 @@ def load_transactions(profile_id: str, return_period: str) -> Dict[str, Any]:
         return _empty_gstr1_structure(return_period)
 
     # Query transactions strictly for this profile and exact return period
-    transactions = db.session.query(Transaction).join(
+    transactions = tenant_query(Transaction, int(profile_id)).join(
         ImportHistory, Transaction.import_history_id == ImportHistory.id
     ).filter(
-        Transaction.profile_id == int(profile_id),
         Transaction.is_deleted == False,
         ImportHistory.return_period == return_period
     ).all()

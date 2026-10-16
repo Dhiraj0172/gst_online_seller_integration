@@ -50,3 +50,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Gemini / Local Workspace
+.gemini/
+LATEST_GEMINI_TASK.md

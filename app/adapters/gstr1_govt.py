@@ -155,21 +155,25 @@ class GSTR1GovtAdapter(BaseGSTR1GovtAdapter):
             return True
 
         sheets, _name, errors, _diag, _wb = self._load_sheets(workbook_or_data, file_name)
-        if errors or not sheets:
+        try:
+            if errors or not sheets:
+                return False
+
+            known_keys = {_key(sheet_name) for sheet_name in self.ALL_KNOWN_SHEETS}
+            present_known = [s for s in sheets if _key(s.name) in known_keys]
+            if not present_known:
+                return False
+
+            # If any recognized sheet has a valid GSTR-1 header row, claim it
+            for sheet in present_known:
+                header = self.detect_header_row(sheet)
+                if header is not None and header.get('score', 0) >= 1:
+                    return True
+
             return False
-
-        known_keys = {_key(sheet_name) for sheet_name in self.ALL_KNOWN_SHEETS}
-        present_known = [s for s in sheets if _key(s.name) in known_keys]
-        if not present_known:
-            return False
-
-        # If any recognized sheet has a valid GSTR-1 header row, claim it
-        for sheet in present_known:
-            header = self.detect_header_row(sheet)
-            if header is not None and header.get('score', 0) >= 1:
-                return True
-
-        return False
+        finally:
+            if _wb and hasattr(_wb, 'close') and not isinstance(workbook_or_data, openpyxl.Workbook):
+                _wb.close()
 
     # ------------------------------------------------------------------
     # Step 2: Validation
@@ -177,58 +181,62 @@ class GSTR1GovtAdapter(BaseGSTR1GovtAdapter):
     def validate(self, workbook_or_data) -> Tuple[bool, List[str]]:
         """Validate multi-sheet GSTR-1 workbook structure."""
         sheets, _file_name, load_errors, _diag, _wb_ref = self._load_sheets(workbook_or_data)
-        if load_errors:
-            return False, list(load_errors)
-        if not sheets:
-            return False, ['Workbook contains no worksheets.']
+        try:
+            if load_errors:
+                return False, list(load_errors)
+            if not sheets:
+                return False, ['Workbook contains no worksheets.']
 
-        known_keys = {_key(n) for n in self.ALL_KNOWN_SHEETS}
-        present_known = [s for s in sheets if _key(s.name) in known_keys]
-        if not present_known:
-            return False, [
-                f'Unrecognized {self.PLATFORM_NAME} file: no recognized GSTR-1 sheet found '
-                f'(scanned sheets: {", ".join(s.name for s in sheets)}). '
-                f'Expected official sheets: {", ".join(self.ALL_KNOWN_SHEETS)}.'
-            ]
+            known_keys = {_key(n) for n in self.ALL_KNOWN_SHEETS}
+            present_known = [s for s in sheets if _key(n := s.name) in known_keys]
+            if not present_known:
+                return False, [
+                    f'Unrecognized {self.PLATFORM_NAME} file: no recognized GSTR-1 sheet found '
+                    f'(scanned sheets: {", ".join(s.name for s in sheets)}). '
+                    f'Expected official sheets: {", ".join(self.ALL_KNOWN_SHEETS)}.'
+                ]
 
-        # Check usable sheets
-        usable, ignored, observed = self.sheet_plan(sheets)
-        if not usable:
-            # If known sheets exist but failed header detection, report explicit header failure
-            failed_known = [s.name for s in present_known if s.name in ignored]
-            return False, [
-                f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
-                f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
-                f'{len(sheets)} sheet(s): {", ".join(s.name for s in sheets)}). '
-                f'Recognized column names include: {self._expected_columns_hint()}.'
-            ]
+            # Check usable sheets
+            usable, ignored, observed = self.sheet_plan(sheets)
+            if not usable:
+                # If known sheets exist but failed header detection, report explicit header failure
+                failed_known = [s.name for s in present_known if s.name in ignored]
+                return False, [
+                    f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
+                    f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
+                    f'{len(sheets)} sheet(s): {", ".join(s.name for s in sheets)}). '
+                    f'Recognized column names include: {self._expected_columns_hint()}.'
+                ]
 
-        errors: List[str] = []
-        # Check required columns per sheet
-        for sheet, header in usable:
-            reqs = self.sheet_required_columns(sheet.name)
-            missing = [f for f in reqs if f not in header['mapping']]
-            if missing:
-                errors.append(
-                    f"Sheet '{sheet.name}' is missing required column(s): "
-                    f"{', '.join(FIELD_LABELS.get(f, f) for f in missing)}."
-                )
-
-        if not errors:
-            has_rows = False
+            errors: List[str] = []
+            # Check required columns per sheet
             for sheet, header in usable:
-                for _rn, _row in self._iter_data_rows(sheet, header):
-                    has_rows = True
-                    break
-                if has_rows:
-                    break
-            if not has_rows:
-                errors.append(
-                    'No data rows found beneath the header row. The file has headers but no '
-                    'transaction rows to import.'
-                )
+                reqs = self.sheet_required_columns(sheet.name)
+                missing = [f for f in reqs if f not in header['mapping']]
+                if missing:
+                    errors.append(
+                        f"Sheet '{sheet.name}' is missing required column(s): "
+                        f"{', '.join(FIELD_LABELS.get(f, f) for f in missing)}."
+                    )
 
-        return (not errors), errors
+            if not errors:
+                has_rows = False
+                for sheet, header in usable:
+                    for _rn, _row in self._iter_data_rows(sheet, header):
+                        has_rows = True
+                        break
+                    if has_rows:
+                        break
+                if not has_rows:
+                    errors.append(
+                        'No data rows found beneath the header row. The file has headers but no '
+                        'transaction rows to import.'
+                    )
+
+            return (not errors), errors
+        finally:
+            if _wb_ref and hasattr(_wb_ref, 'close') and not isinstance(workbook_or_data, openpyxl.Workbook):
+                _wb_ref.close()
 
     # ------------------------------------------------------------------
     # Step 3: Required columns per sheet kind
@@ -413,19 +421,23 @@ class GSTR1GovtAdapter(BaseGSTR1GovtAdapter):
         result = super().parse(workbook_or_data, file_name, stream=stream)
         # Parse non-transaction docs sheet if present
         sheets, _name, _errs, _diag, _wb_ref = self._load_sheets(workbook_or_data, file_name)
-        for s in sheets:
-            if _key(s.name) == 'docs':
-                doc_rows = []
-                for row_idx, row in enumerate(s.rows(), start=1):
-                    if row_idx == 1:
-                        doc_headers = [str(c).strip() if c is not None else '' for c in row]
-                        continue
-                    if not row or not any(row):
-                        continue
-                    row_dict = dict(zip(doc_headers, row))
-                    if any(v is not None and str(v).strip() for v in row_dict.values()):
-                        doc_rows.append(row_dict)
-                result.metadata['docs_summary'] = doc_rows
-                break
+        try:
+            for s in sheets:
+                if _key(s.name) == 'docs':
+                    doc_rows = []
+                    for row_idx, row in enumerate(s.rows(), start=1):
+                        if row_idx == 1:
+                            doc_headers = [str(c).strip() if c is not None else '' for c in row]
+                            continue
+                        if not row or not any(row):
+                            continue
+                        row_dict = dict(zip(doc_headers, row))
+                        if any(v is not None and str(v).strip() for v in row_dict.values()):
+                            doc_rows.append(row_dict)
+                    result.metadata['docs_summary'] = doc_rows
+                    break
+        finally:
+            if _wb_ref and hasattr(_wb_ref, 'close') and not isinstance(workbook_or_data, openpyxl.Workbook):
+                _wb_ref.close()
         return result
 

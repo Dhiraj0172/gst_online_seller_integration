@@ -80,49 +80,53 @@ class MyntraAdapter(BaseMyntraAdapter):
             return any(token in name for token in self.FILENAME_TOKENS)
 
         sheets, _name, errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data, file_name)
-        if errors or not sheets:
-            return False
+        try:
+            if errors or not sheets:
+                return False
 
-        # Look specifically for explicit Myntra sheet: "Myntra GST Report" (case-insensitive)
-        target_sheet = next((s for s in sheets if _key(s.name) == 'myntra gst report'), None)
-        if target_sheet is None:
-            return False
+            # Look specifically for explicit Myntra sheet: "Myntra GST Report" (case-insensitive)
+            target_sheet = next((s for s in sheets if _key(s.name) == 'myntra gst report'), None)
+            if target_sheet is None:
+                return False
 
-        header_info = self.detect_header_row(target_sheet)
-        if header_info is None:
-            return False
+            header_info = self.detect_header_row(target_sheet)
+            if header_info is None:
+                return False
 
-        mapping = header_info.get('mapping', {})
-        raw_headers = set(str(h).strip().lower() for h in header_info.get('headers', []) if h)
+            mapping = header_info.get('mapping', {})
+            raw_headers = set(str(h).strip().lower() for h in header_info.get('headers', []) if h)
 
-        # Require identity (Order Item ID / Invoice Number / Order ID) and taxable value
-        has_identity = 'order_item_id' in mapping or 'invoice_number' in mapping or 'order_id' in mapping
-        has_taxable = 'taxable_value' in mapping
+            # Require identity (Order Item ID / Invoice Number / Order ID) and taxable value
+            has_identity = 'order_item_id' in mapping or 'invoice_number' in mapping or 'order_id' in mapping
+            has_taxable = 'taxable_value' in mapping
 
-        if not (has_identity and has_taxable):
-            return False
+            if not (has_identity and has_taxable):
+                return False
 
-        signature_candidates = [
-            'order item id',
-            'product title',
-            'selling price',
-            'order id',
-            'invoice number',
-            'taxable value',
-            'supply type',
-            'ship from state',
-            'ship to state',
-            'buyer gstin',
-            'seller gstin',
-            'hsn/sac',
-            'invoice value',
-            'place of supply',
-        ]
-        matched_signatures = sum(1 for sig in signature_candidates if sig in raw_headers)
-        if matched_signatures < 4:
-            return False
+            signature_candidates = [
+                'order item id',
+                'product title',
+                'selling price',
+                'order id',
+                'invoice number',
+                'taxable value',
+                'supply type',
+                'ship from state',
+                'ship to state',
+                'buyer gstin',
+                'seller gstin',
+                'hsn/sac',
+                'invoice value',
+                'place of supply',
+            ]
+            matched_signatures = sum(1 for sig in signature_candidates if sig in raw_headers)
+            if matched_signatures < 4:
+                return False
 
-        return True
+            return True
+        finally:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
 
     # ------------------------------------------------------------------
     # Step 2: Schema Validation
@@ -142,55 +146,59 @@ class MyntraAdapter(BaseMyntraAdapter):
             return False, ['No workbook or data provided.']
 
         sheets, _file_name, load_errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data)
-        if load_errors:
-            return False, list(load_errors)
-        if not sheets:
-            return False, ['Workbook contains no worksheets.']
+        try:
+            if load_errors:
+                return False, list(load_errors)
+            if not sheets:
+                return False, ['Workbook contains no worksheets.']
 
-        target_sheet = next((s for s in sheets if _key(s.name) == 'myntra gst report'), None)
-        if target_sheet is None:
-            target_sheet = next((s for s in sheets if _key(s.name) == 'gst report'), None)
-        if target_sheet is None and len(sheets) == 1:
-            target_sheet = sheets[0]
+            target_sheet = next((s for s in sheets if _key(s.name) == 'myntra gst report'), None)
+            if target_sheet is None:
+                target_sheet = next((s for s in sheets if _key(s.name) == 'gst report'), None)
+            if target_sheet is None and len(sheets) == 1:
+                target_sheet = sheets[0]
 
-        if target_sheet is None:
-            return False, [
-                f"Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable "
-                f"header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of "
-                f"{len(sheets)} sheet(s): {', '.join(s.name for s in sheets)}). "
-                f"Recognized column names include: {self._expected_columns_hint()}."
-            ]
+            if target_sheet is None:
+                return False, [
+                    f"Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable "
+                    f"header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of "
+                    f"{len(sheets)} sheet(s): {', '.join(s.name for s in sheets)}). "
+                    f"Recognized column names include: {self._expected_columns_hint()}."
+                ]
 
-        header_info = self.detect_header_row(target_sheet)
-        if header_info is None:
-            return False, [
-                f"Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable "
-                f"header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of "
-                f"{len(sheets)} sheet(s)). Recognized column names include: "
-                f"{self._expected_columns_hint()}."
-            ]
+            header_info = self.detect_header_row(target_sheet)
+            if header_info is None:
+                return False, [
+                    f"Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable "
+                    f"header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of "
+                    f"{len(sheets)} sheet(s)). Recognized column names include: "
+                    f"{self._expected_columns_hint()}."
+                ]
 
-        errors: List[str] = []
-        missing = [field for field in self.REQUIRED_COLUMNS if field not in header_info['mapping']]
-        if missing:
-            errors.append(
-                f"Sheet '{target_sheet.name}' is missing required column(s): "
-                f"{', '.join(FIELD_LABELS.get(f, f) for f in missing)}. "
-                f"Columns found: {', '.join(h for h in header_info['headers'] if h) or '(none)'}."
-            )
-
-        if not errors:
-            has_rows = False
-            for _row_number, _row in self._iter_data_rows(target_sheet, header_info):
-                has_rows = True
-                break
-            if not has_rows:
+            errors: List[str] = []
+            missing = [field for field in self.REQUIRED_COLUMNS if field not in header_info['mapping']]
+            if missing:
                 errors.append(
-                    'No data rows found beneath the header row. The file has headers but no '
-                    'transaction rows to import.'
+                    f"Sheet '{target_sheet.name}' is missing required column(s): "
+                    f"{', '.join(FIELD_LABELS.get(f, f) for f in missing)}. "
+                    f"Columns found: {', '.join(h for h in header_info['headers'] if h) or '(none)'}."
                 )
 
-        return (not errors), errors
+            if not errors:
+                has_rows = False
+                for _row_number, _row in self._iter_data_rows(target_sheet, header_info):
+                    has_rows = True
+                    break
+                if not has_rows:
+                    errors.append(
+                        'No data rows found beneath the header row. The file has headers but no '
+                        'transaction rows to import.'
+                    )
+
+            return (not errors), errors
+        finally:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
 
     # ------------------------------------------------------------------
     # Step 3: Row Parsing & Canonicalization
@@ -206,10 +214,14 @@ class MyntraAdapter(BaseMyntraAdapter):
         result.metadata["_wb_ref"] = _wb_ref
 
         if load_errors:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.extend(load_errors)
             return result
 
         if not sheets:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.append('Workbook contains no worksheets.')
             return result
 
@@ -220,6 +232,8 @@ class MyntraAdapter(BaseMyntraAdapter):
             target_sheet = sheets[0]
 
         if target_sheet is None:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.append(
                 f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
                 f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
@@ -230,6 +244,8 @@ class MyntraAdapter(BaseMyntraAdapter):
 
         header = self.detect_header_row(target_sheet)
         if header is None:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.append(
                 f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
                 f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
@@ -243,19 +259,23 @@ class MyntraAdapter(BaseMyntraAdapter):
         headers = header['headers']
 
         def _row_generator():
-            for row_number, row in self._iter_data_rows(target_sheet, header):
-                raw_data: Dict[str, Any] = {}
-                for position in range(max(len(headers), len(row))):
-                    if position < len(headers):
-                        key = headers[position] or f'col_{position}'
-                    else:
-                        key = f'col_{position}'
-                    raw_data[key] = row[position] if position < len(row) else None
-                if len(row) > len(headers):
-                    raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
+            try:
+                for row_number, row in self._iter_data_rows(target_sheet, header):
+                    raw_data: Dict[str, Any] = {}
+                    for position in range(max(len(headers), len(row))):
+                        if position < len(headers):
+                            key = headers[position] or f'col_{position}'
+                        else:
+                            key = f'col_{position}'
+                        raw_data[key] = row[position] if position < len(row) else None
+                    if len(row) > len(headers):
+                        raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
 
-                row_object = self._build_import_row(raw_data, row_number, target_sheet.name)
-                yield row_object
+                    row_object = self._build_import_row(raw_data, row_number, target_sheet.name)
+                    yield row_object
+            finally:
+                if _wb_ref and hasattr(_wb_ref, 'close'):
+                    _wb_ref.close()
 
         result.rows = _row_generator()
         

@@ -50,6 +50,7 @@ from app.services.duplicate_service import (
 )
 from app.utils.csv_utils import read_csv_rows
 from app.utils.date_utils import parse_date
+from app.utils.query import tenant_query
 from app.utils.state_codes import resolve_pos_code
 
 # Re-export for compatibility with tcs_service and other modules
@@ -118,35 +119,36 @@ def read_chunks(file_path: str, chunk_size: int = 1000) -> Iterator[List[Dict[st
         return
 
     wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-    ws = wb.active
+    try:
+        ws = wb.active
 
-    headers = None
-    chunk = []
+        headers = None
+        chunk = []
 
-    for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
-        if not any(row):
-            continue
+        for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            if not any(row):
+                continue
 
-        if headers is None:
-            headers = [str(c).strip() if c else f"col_{i}" for i, c in enumerate(row)]
-            continue
+            if headers is None:
+                headers = [str(c).strip() if c else f"col_{i}" for i, c in enumerate(row)]
+                continue
 
-        raw_data = dict(zip(headers, row))
-        if not any(v for v in raw_data.values() if v is not None and str(v).strip()):
-            continue
+            raw_data = dict(zip(headers, row))
+            if not any(v for v in raw_data.values() if v is not None and str(v).strip()):
+                continue
 
-        raw_data['_row_number'] = row_idx
-        raw_data['_sheet_name'] = ws.title
-        chunk.append(raw_data)
+            raw_data['_row_number'] = row_idx
+            raw_data['_sheet_name'] = ws.title
+            chunk.append(raw_data)
 
-        if len(chunk) >= chunk_size:
+            if len(chunk) >= chunk_size:
+                yield chunk
+                chunk = []
+
+        if chunk:
             yield chunk
-            chunk = []
-
-    if chunk:
-        yield chunk
-
-    wb.close()
+    finally:
+        wb.close()
 
 
 def _read_csv_chunks(file_path: str, chunk_size: int = 1000) -> Iterator[List[Dict[str, Any]]]:
@@ -240,6 +242,9 @@ def process_import(
         db.session.commit() if _internal_commit else db.session.flush()
 
     result.import_history_id = import_history.id
+
+    wb = None
+    parse_result = None
 
     try:
         # Step 2: Adapter detection & file handle loading
@@ -666,6 +671,13 @@ def process_import(
                 wb.close()
             except Exception:
                 pass
+        if parse_result and hasattr(parse_result, 'metadata'):
+            _wb_stream = parse_result.metadata.get('_wb_ref')
+            if _wb_stream and hasattr(_wb_stream, 'close'):
+                try:
+                    _wb_stream.close()
+                except Exception:
+                    pass
 
     return result
 
@@ -814,17 +826,15 @@ def reprocess_import(
     from app.models.gstr1_generation import GSTR1Generation
     
     # 1. Resolve and check original import
-    original_import = db.session.get(ImportHistory, import_history_id)
-    if not original_import or original_import.profile_id != profile_id:
+    original_import = tenant_query(ImportHistory, profile_id).filter_by(id=import_history_id).first()
+    if not original_import:
         result = ImportProcessingResult()
         result.status = 'FAILED'
         result.errors.append("Original import not found or unauthorized.")
         return result
 
     # 4. Check generation freeze BEFORE mutating
-    # 4. Check generation freeze BEFORE mutating
-    freeze = db.session.query(GSTR1Generation).filter_by(
-        profile_id=profile_id,
+    freeze = tenant_query(GSTR1Generation, profile_id).filter_by(
         return_period=original_import.return_period,
         generation_status='COMPLETED',
         validation_passed=True
@@ -837,7 +847,7 @@ def reprocess_import(
 
     # 4.5 Atomic Concurrency Check (Idempotency)
     # Lock the original import and mark it as superseded to prevent concurrent reprocesses
-    updated = db.session.query(ImportHistory).filter(
+    updated = tenant_query(ImportHistory, profile_id).filter(
         ImportHistory.id == import_history_id,
         ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL', 'FAILED', 'REJECTED_UNREADABLE'])
     ).update({'processing_status': 'SUPERSEDED'}, synchronize_session=False)
@@ -871,7 +881,7 @@ def reprocess_import(
     new_id = new_import.id
 
     # 6. Soft-delete ONLY active Transactions belonging to the source ImportHistory
-    db.session.query(Transaction).filter_by(
+    tenant_query(Transaction, profile_id).filter_by(
         import_history_id=original_import.id,
         is_deleted=False
     ).update({

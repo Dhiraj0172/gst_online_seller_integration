@@ -11,6 +11,7 @@ from app.services.ecom_service import get_ecom_supplies, aggregate_ecom
 from app.services.gst_rules import calculate_tcs, get_tcs_rates_for_period
 from app.services.import_service import ImportResult
 from app.services.hsn_service import ReconciliationResult
+from app.utils.query import tenant_query
 
 
 class TCSReportParser:
@@ -168,8 +169,7 @@ def import_tcs_report(file_path: str, profile_id: int, return_period: str, user_
             file_hash = hashlib.sha256(f.read()).hexdigest()
 
         # Check for duplicate
-        existing = TCSReconciliation.query.filter(
-            TCSReconciliation.profile_id == profile_id,
+        existing = tenant_query(TCSReconciliation, profile_id).filter(
             TCSReconciliation.return_period == return_period,
             # Could add file_hash column for better duplicate detection
         ).first()
@@ -177,8 +177,7 @@ def import_tcs_report(file_path: str, profile_id: int, return_period: str, user_
         if existing:
             result.warnings.append("TCS reconciliation already exists for this period. Overwriting.")
             # Clear existing data for this period/profile
-            TCSReconciliation.query.filter(
-                TCSReconciliation.profile_id == profile_id,
+            tenant_query(TCSReconciliation, profile_id).filter(
                 TCSReconciliation.return_period == return_period
             ).delete()
 
@@ -265,8 +264,7 @@ def reconcile_tcs(profile_id: int, return_period: str, user_id: int, include_und
                          if a.get('has_undated_supplies')]
 
     # Get portal data
-    portal_rows = TCSReconciliation.query.filter(
-        TCSReconciliation.profile_id == profile_id,
+    portal_rows = tenant_query(TCSReconciliation, profile_id).filter(
         TCSReconciliation.return_period == return_period
     ).all()
 
@@ -536,14 +534,19 @@ def apply_adjustment(reconciliation_id: int, adjustment_type: str, notes: str, u
     """
     from app.models import AuditLog, GSTProfile
 
-    query = TCSReconciliation.query.join(
-        GSTProfile, TCSReconciliation.profile_id == GSTProfile.id
-    ).filter(
-        TCSReconciliation.id == reconciliation_id
-    )
-
     if profile_id is not None:
-        query = query.filter(TCSReconciliation.profile_id == profile_id)
+        query = tenant_query(TCSReconciliation, profile_id).join(
+            GSTProfile, TCSReconciliation.profile_id == GSTProfile.id
+        ).filter(
+            TCSReconciliation.id == reconciliation_id
+        )
+    else:
+        query = TCSReconciliation.query.join(
+            GSTProfile, TCSReconciliation.profile_id == GSTProfile.id
+        ).filter(
+            TCSReconciliation.id == reconciliation_id
+        )
+
     if user_id is not None:
         query = query.filter(GSTProfile.user_id == user_id)
 
@@ -601,8 +604,7 @@ def export_reconciliation(profile_id: int, return_period: str) -> str:
     import io
     from app.utils.csv_utils import sanitize_csv_value
 
-    rows = TCSReconciliation.query.filter(
-        TCSReconciliation.profile_id == profile_id,
+    rows = tenant_query(TCSReconciliation, profile_id).filter(
         TCSReconciliation.return_period == return_period
     ).order_by(TCSReconciliation.state_code).all()
 

@@ -8,6 +8,7 @@ from app.extensions import db
 from app.models import AuditLog, GSTProfile, ImportHistory, Transaction, GSTR1Generation, TCSReconciliation
 from app.services.validation_service import get_pre_filing_review, get_validation_issues
 from app.utils.csv_utils import sanitize_csv_value
+from app.utils.query import tenant_query
 from . import statement_bp
 
 
@@ -74,7 +75,7 @@ def get_active_return_period(profile_id=None):
     # 3. Profile's latest import period if available
     if profile_id:
         latest_imp = (
-            ImportHistory.query.filter_by(profile_id=profile_id)
+            tenant_query(ImportHistory, profile_id)
             .order_by(ImportHistory.created_at.desc())
             .first()
         )
@@ -95,8 +96,8 @@ def index():
     available_periods = []
     if profile_id:
         rows = (
-            db.session.query(ImportHistory.return_period)
-            .filter_by(profile_id=profile_id)
+            tenant_query(ImportHistory, profile_id)
+            .with_entities(ImportHistory.return_period)
             .distinct()
             .order_by(ImportHistory.return_period.desc())
             .all()
@@ -140,11 +141,9 @@ def get_paginated_transactions(tx_type):
     search = request.args.get('search', '').strip()
 
     query = (
-        db.session.query(Transaction)
+        tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
-            Transaction.profile_id == profile_id,
-            Transaction.is_deleted == False,
             ImportHistory.return_period == return_period,
         )
     )
@@ -283,7 +282,7 @@ def edit_transaction(id):
     profile_id = get_active_profile_id()
     if not profile_id:
         return jsonify({"error": True, "message": "Profile required"}), 404
-    t = Transaction.query.filter_by(id=id, profile_id=profile_id, is_deleted=False).first_or_404()
+    t = tenant_query(Transaction, profile_id).filter_by(id=id, is_deleted=False).first_or_404()
 
     try:
         old_val = t.taxable_value
@@ -341,7 +340,7 @@ def delete_transaction(id):
     profile_id = get_active_profile_id()
     if not profile_id:
         return jsonify({"error": True, "message": "Profile required"}), 404
-    t = Transaction.query.filter_by(id=id, profile_id=profile_id, is_deleted=False).first_or_404()
+    t = tenant_query(Transaction, profile_id).filter_by(id=id, is_deleted=False).first_or_404()
 
     try:
         t.is_deleted = True
@@ -370,7 +369,7 @@ def get_transaction(id):
     profile_id = get_active_profile_id()
     if not profile_id:
         return jsonify({"error": True, "message": "Profile required"}), 404
-    t = Transaction.query.filter_by(id=id, profile_id=profile_id, is_deleted=False).first_or_404()
+    t = tenant_query(Transaction, profile_id).filter_by(id=id, is_deleted=False).first_or_404()
     return jsonify({
         "id": t.id,
         "invoice_number": t.invoice_number,
@@ -404,9 +403,8 @@ def bulk_delete_transactions():
         return jsonify({"error": True, "message": "No transaction IDs provided"}), 400
 
     try:
-        txs = Transaction.query.filter(
+        txs = tenant_query(Transaction, profile_id).filter(
             Transaction.id.in_(ids),
-            Transaction.profile_id == profile_id,
             Transaction.is_deleted == False
         ).all()
         for t in txs:
@@ -437,8 +435,8 @@ def validation_errors():
     available_periods = []
     if profile_id:
         rows = (
-            db.session.query(ImportHistory.return_period)
-            .filter_by(profile_id=profile_id)
+            tenant_query(ImportHistory, profile_id)
+            .with_entities(ImportHistory.return_period)
             .distinct()
             .order_by(ImportHistory.return_period.desc())
             .all()
@@ -504,11 +502,9 @@ def export_section(section):
     sec_norm = sec.replace('-', '_')
 
     query = (
-        db.session.query(Transaction)
+        tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
-            Transaction.profile_id == profile_id,
-            Transaction.is_deleted == False,
             ImportHistory.return_period == return_period,
         )
     )
@@ -594,9 +590,9 @@ def audit_trail():
         query = query.filter(AuditLog.action == action.upper())
 
     if profile_id:
-        gen_ids = db.session.query(GSTR1Generation.id).filter_by(profile_id=profile_id)
-        tx_ids = db.session.query(Transaction.id).filter_by(profile_id=profile_id)
-        tcs_ids = db.session.query(TCSReconciliation.id).filter_by(profile_id=profile_id)
+        gen_ids = tenant_query(GSTR1Generation, profile_id).with_entities(GSTR1Generation.id)
+        tx_ids = tenant_query(Transaction, profile_id).with_entities(Transaction.id)
+        tcs_ids = tenant_query(TCSReconciliation, profile_id).with_entities(TCSReconciliation.id)
 
         profile_condition = (
             (AuditLog.entity_type == 'GSTR1Generation') & (AuditLog.entity_id.in_(gen_ids)) |
@@ -607,21 +603,23 @@ def audit_trail():
         query = query.filter(profile_condition)
 
     if return_period:
-        rp_gen_ids = db.session.query(GSTR1Generation.id).filter(
-            GSTR1Generation.profile_id == profile_id if profile_id else True,
-            GSTR1Generation.return_period == return_period
+        rp_gen_ids = (
+            tenant_query(GSTR1Generation, profile_id).filter_by(return_period=return_period).with_entities(GSTR1Generation.id)
+            if profile_id else
+            db.session.query(GSTR1Generation.id).filter(GSTR1Generation.return_period == return_period)
         )
         rp_tx_ids = (
-            db.session.query(Transaction.id)
+            (tenant_query(Transaction, profile_id) if profile_id else Transaction.query)
             .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
             .filter(
-                Transaction.profile_id == profile_id if profile_id else True,
                 ImportHistory.return_period == return_period
             )
+            .with_entities(Transaction.id)
         )
-        rp_tcs_ids = db.session.query(TCSReconciliation.id).filter(
-            TCSReconciliation.profile_id == profile_id if profile_id else True,
-            TCSReconciliation.return_period == return_period
+        rp_tcs_ids = (
+            tenant_query(TCSReconciliation, profile_id).filter_by(return_period=return_period).with_entities(TCSReconciliation.id)
+            if profile_id else
+            db.session.query(TCSReconciliation.id).filter(TCSReconciliation.return_period == return_period)
         )
 
         rp_condition = (
@@ -676,8 +674,8 @@ def audit_trail():
     available_periods = []
     if profile_id:
         rows = (
-            db.session.query(ImportHistory.return_period)
-            .filter_by(profile_id=profile_id)
+            tenant_query(ImportHistory, profile_id)
+            .with_entities(ImportHistory.return_period)
             .distinct()
             .order_by(ImportHistory.return_period.desc())
             .all()

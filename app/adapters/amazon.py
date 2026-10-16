@@ -114,47 +114,51 @@ class AmazonAdapter(BaseGenericAdapter):
             return any(token in name for token in self.FILENAME_TOKENS)
 
         sheets, _name, errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data, file_name)
-        if errors or not sheets:
+        try:
+            if errors or not sheets:
+                return False
+
+            # Look for sheet named 'MTR' (case-insensitive)
+            mtr_sheet = next((s for s in sheets if _key(s.name) == 'mtr'), None)
+
+            if mtr_sheet is not None:
+                # Check if there are any rows in the sheet
+                has_any_content = False
+                for row in mtr_sheet.rows():
+                    if any(v is not None and str(v).strip() for v in row):
+                        has_any_content = True
+                        break
+
+                if not has_any_content:
+                    # Empty worksheet titled 'MTR': detected by explicit sheet name
+                    return True
+
+                # If content exists, verify headers match Amazon schema
+                header_info = self.detect_header_row(mtr_sheet)
+                if header_info is None:
+                    return False
+                mapping = header_info['mapping']
+                return bool('invoice_number' in mapping or 'order_id' in mapping or 'taxable_value' in mapping)
+
+            # If no sheet is named 'MTR':
+            # Check if it's a CSV or single-sheet file with filename hint
+            is_csv = name.endswith('.csv') or (
+                len(sheets) == 1 and (sheets[0].name.endswith('.csv') or getattr(sheets[0], 'is_csv', False))
+            )
+            if is_csv and any(token in name for token in self.FILENAME_TOKENS):
+                header_info = self.detect_header_row(sheets[0])
+                if header_info is None:
+                    return False
+                mapping = header_info['mapping']
+                has_identity = 'invoice_number' in mapping or 'order_id' in mapping
+                has_taxable = 'taxable_value' in mapping
+                has_extra = any(f in mapping for f in ('supply_type', 'ship_from_state', 'ship_to_state', 'customer_gstin'))
+                return bool(has_identity and has_taxable and has_extra)
+
             return False
-
-        # Look for sheet named 'MTR' (case-insensitive)
-        mtr_sheet = next((s for s in sheets if _key(s.name) == 'mtr'), None)
-
-        if mtr_sheet is not None:
-            # Check if there are any rows in the sheet
-            has_any_content = False
-            for row in mtr_sheet.rows():
-                if any(v is not None and str(v).strip() for v in row):
-                    has_any_content = True
-                    break
-
-            if not has_any_content:
-                # Empty worksheet titled 'MTR': detected by explicit sheet name
-                return True
-
-            # If content exists, verify headers match Amazon schema
-            header_info = self.detect_header_row(mtr_sheet)
-            if header_info is None:
-                return False
-            mapping = header_info['mapping']
-            return bool('invoice_number' in mapping or 'order_id' in mapping or 'taxable_value' in mapping)
-
-        # If no sheet is named 'MTR':
-        # Check if it's a CSV or single-sheet file with filename hint
-        is_csv = name.endswith('.csv') or (
-            len(sheets) == 1 and (sheets[0].name.endswith('.csv') or getattr(sheets[0], 'is_csv', False))
-        )
-        if is_csv and any(token in name for token in self.FILENAME_TOKENS):
-            header_info = self.detect_header_row(sheets[0])
-            if header_info is None:
-                return False
-            mapping = header_info['mapping']
-            has_identity = 'invoice_number' in mapping or 'order_id' in mapping
-            has_taxable = 'taxable_value' in mapping
-            has_extra = any(f in mapping for f in ('supply_type', 'ship_from_state', 'ship_to_state', 'customer_gstin'))
-            return bool(has_identity and has_taxable and has_extra)
-
-        return False
+        finally:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
 
     # ------------------------------------------------------------------
     # Step 4: Amazon-Specific Schema Validation
@@ -174,56 +178,60 @@ class AmazonAdapter(BaseGenericAdapter):
             return False, ['No workbook or data provided.']
 
         sheets, _file_name, load_errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data)
-        if load_errors:
-            return False, list(load_errors)
-        if not sheets:
-            return False, ['Workbook contains no worksheets.']
+        try:
+            if load_errors:
+                return False, list(load_errors)
+            if not sheets:
+                return False, ['Workbook contains no worksheets.']
 
-        # Find target sheet named 'MTR' (or single-sheet CSV)
-        mtr_sheet = next((s for s in sheets if _key(s.name) == 'mtr'), None)
+            # Find target sheet named 'MTR' (or single-sheet CSV)
+            mtr_sheet = next((s for s in sheets if _key(s.name) == 'mtr'), None)
 
-        if mtr_sheet is None:
-            is_csv = len(sheets) == 1 and (sheets[0].name.endswith('.csv') or getattr(sheets[0], 'is_csv', False))
-            if is_csv:
-                mtr_sheet = sheets[0]
-            else:
+            if mtr_sheet is None:
+                is_csv = len(sheets) == 1 and (sheets[0].name.endswith('.csv') or getattr(sheets[0], 'is_csv', False))
+                if is_csv:
+                    mtr_sheet = sheets[0]
+                else:
+                    return False, [
+                        f"Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable "
+                        f"header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of "
+                        f"{len(sheets)} sheet(s): {', '.join(s.name for s in sheets)}). "
+                        f"Recognized column names include: {self._expected_columns_hint()}."
+                    ]
+
+            header_info = self.detect_header_row(mtr_sheet)
+            if header_info is None:
                 return False, [
                     f"Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable "
                     f"header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of "
-                    f"{len(sheets)} sheet(s): {', '.join(s.name for s in sheets)}). "
-                    f"Recognized column names include: {self._expected_columns_hint()}."
+                    f"{len(sheets)} sheet(s)). Recognized column names include: "
+                    f"{self._expected_columns_hint()}."
                 ]
 
-        header_info = self.detect_header_row(mtr_sheet)
-        if header_info is None:
-            return False, [
-                f"Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable "
-                f"header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of "
-                f"{len(sheets)} sheet(s)). Recognized column names include: "
-                f"{self._expected_columns_hint()}."
-            ]
-
-        errors: List[str] = []
-        missing = [field for field in self.REQUIRED_COLUMNS if field not in header_info['mapping']]
-        if missing:
-            errors.append(
-                f"Sheet '{mtr_sheet.name}' is missing required column(s): "
-                f"{', '.join(FIELD_LABELS.get(f, f) for f in missing)}. "
-                f"Columns found: {', '.join(h for h in header_info['headers'] if h) or '(none)'}."
-            )
-
-        if not errors:
-            has_rows = False
-            for _row_number, _row in self._iter_data_rows(mtr_sheet, header_info):
-                has_rows = True
-                break
-            if not has_rows:
+            errors: List[str] = []
+            missing = [field for field in self.REQUIRED_COLUMNS if field not in header_info['mapping']]
+            if missing:
                 errors.append(
-                    'No data rows found beneath the header row. The file has headers but no '
-                    'transaction rows to import.'
+                    f"Sheet '{mtr_sheet.name}' is missing required column(s): "
+                    f"{', '.join(FIELD_LABELS.get(f, f) for f in missing)}. "
+                    f"Columns found: {', '.join(h for h in header_info['headers'] if h) or '(none)'}."
                 )
 
-        return (not errors), errors
+            if not errors:
+                has_rows = False
+                for _row_number, _row in self._iter_data_rows(mtr_sheet, header_info):
+                    has_rows = True
+                    break
+                if not has_rows:
+                    errors.append(
+                        'No data rows found beneath the header row. The file has headers but no '
+                        'transaction rows to import.'
+                    )
+
+            return (not errors), errors
+        finally:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
 
     # ------------------------------------------------------------------
     # Step 5: Amazon Row Parsing & Canonicalization
@@ -239,10 +247,14 @@ class AmazonAdapter(BaseGenericAdapter):
         result.metadata["_wb_ref"] = _wb_ref
 
         if load_errors:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.extend(load_errors)
             return result
 
         if not sheets:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.append('Workbook contains no worksheets.')
             return result
 
@@ -252,6 +264,8 @@ class AmazonAdapter(BaseGenericAdapter):
             if is_csv:
                 mtr_sheet = sheets[0]
             else:
+                if _wb_ref and hasattr(_wb_ref, 'close'):
+                    _wb_ref.close()
                 result.errors.append(
                     f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
                     f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
@@ -262,6 +276,8 @@ class AmazonAdapter(BaseGenericAdapter):
 
         header = self.detect_header_row(mtr_sheet)
         if header is None:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.append(
                 f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
                 f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
@@ -275,19 +291,23 @@ class AmazonAdapter(BaseGenericAdapter):
         headers = header['headers']
 
         def _row_generator():
-            for row_number, row in self._iter_data_rows(mtr_sheet, header):
-                raw_data: Dict[str, Any] = {}
-                for position in range(max(len(headers), len(row))):
-                    if position < len(headers):
-                        key = headers[position] or f'col_{position}'
-                    else:
-                        key = f'col_{position}'
-                    raw_data[key] = row[position] if position < len(row) else None
-                if len(row) > len(headers):
-                    raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
+            try:
+                for row_number, row in self._iter_data_rows(mtr_sheet, header):
+                    raw_data: Dict[str, Any] = {}
+                    for position in range(max(len(headers), len(row))):
+                        if position < len(headers):
+                            key = headers[position] or f'col_{position}'
+                        else:
+                            key = f'col_{position}'
+                        raw_data[key] = row[position] if position < len(row) else None
+                    if len(row) > len(headers):
+                        raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
 
-                row_object = self._build_import_row(raw_data, row_number, mtr_sheet.name)
-                yield row_object
+                    row_object = self._build_import_row(raw_data, row_number, mtr_sheet.name)
+                    yield row_object
+            finally:
+                if _wb_ref and hasattr(_wb_ref, 'close'):
+                    _wb_ref.close()
 
         result.rows = _row_generator()
         

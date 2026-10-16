@@ -7,6 +7,7 @@ from app.models import GSTR1Generation, GSTProfile
 from app.services.gstr1_generator import generate_gstr1, GenerationBlockedError
 from app.services.reconciliation_service import run_full_reconciliation
 from app.services.audit_service import log_generation_audit, extract_generation_summary
+from app.utils.query import tenant_query
 from app.extensions import db
 from . import generate_bp
 
@@ -35,7 +36,7 @@ def index():
     recon_report = None
     return_period = request.args.get('return_period') or session.get('return_period', '012025')
     if profile:
-        generations = GSTR1Generation.query.filter_by(profile_id=profile.id).order_by(GSTR1Generation.created_at.desc()).all()
+        generations = tenant_query(GSTR1Generation, profile.id).order_by(GSTR1Generation.created_at.desc()).all()
         recon_report = run_full_reconciliation(profile.id, return_period)
     return render_template(
         'generate.html',
@@ -56,7 +57,7 @@ def _save_generation_record(profile, return_period, gen_result, recon_report, ex
     gen = None
     if existing_gen_id:
         try:
-            gen = GSTR1Generation.query.filter_by(id=int(existing_gen_id), profile_id=profile.id).first()
+            gen = tenant_query(GSTR1Generation, profile.id).filter_by(id=int(existing_gen_id)).first()
         except (ValueError, TypeError):
             gen = None
 
@@ -198,7 +199,7 @@ def status(id):
     profile = get_active_profile()
     if not profile:
         abort(404)
-    gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    gen = tenant_query(GSTR1Generation, profile.id).filter_by(id=id).first_or_404()
     return jsonify({"status": gen.generation_status})
 
 @generate_bp.route('/generate/download/excel/<int:id>')
@@ -207,7 +208,7 @@ def download_excel(id):
     profile = get_active_profile()
     if not profile:
         abort(404)
-    gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    gen = tenant_query(GSTR1Generation, profile.id).filter_by(id=id).first_or_404()
     filename = f"GSTR1_{profile.gstin}_{gen.return_period}.xlsx"
     log_generation_audit(
         user_id=current_user.id,
@@ -243,7 +244,7 @@ def download_json(id):
     profile = get_active_profile()
     if not profile:
         abort(404)
-    gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first_or_404()
+    gen = tenant_query(GSTR1Generation, profile.id).filter_by(id=id).first_or_404()
     filename = f"GSTR1_{profile.gstin}_{gen.return_period}.json"
     log_generation_audit(
         user_id=current_user.id,
@@ -279,7 +280,7 @@ def download_json(id):
 def validation(id):
     profile = get_active_profile()
     if profile:
-        gen = GSTR1Generation.query.filter_by(id=id, profile_id=profile.id).first()
+        gen = tenant_query(GSTR1Generation, profile.id).filter_by(id=id).first()
         if gen and gen.return_period:
             return redirect(url_for('statement.validation_errors', return_period=gen.return_period))
     return redirect(url_for('statement.validation_errors'))
@@ -298,7 +299,7 @@ def regenerate():
     previous_gen = None
     if existing_id:
         try:
-            previous_gen = GSTR1Generation.query.filter_by(id=int(existing_id), profile_id=profile.id).first()
+            previous_gen = tenant_query(GSTR1Generation, profile.id).filter_by(id=int(existing_id)).first()
             if previous_gen and not return_period:
                 return_period = previous_gen.return_period
         except (ValueError, TypeError):
@@ -308,8 +309,7 @@ def regenerate():
         return_period = session.get('return_period', '012025')
 
     if not previous_gen and return_period:
-        previous_gen = GSTR1Generation.query.filter_by(
-            profile_id=profile.id,
+        previous_gen = tenant_query(GSTR1Generation, profile.id).filter_by(
             return_period=return_period
         ).order_by(GSTR1Generation.created_at.desc()).first()
 

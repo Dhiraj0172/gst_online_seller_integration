@@ -47,6 +47,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.models import ImportHistory, Transaction
 from app.extensions import db
+from app.utils.query import tenant_query
 
 FINGERPRINT_VERSION = 'v1'
 
@@ -139,8 +140,7 @@ def find_prior_file_import(profile_id: int, file_hash: Optional[str],
     """
     if not file_hash:
         return None
-    query = ImportHistory.query.filter(
-        ImportHistory.profile_id == profile_id,
+    query = tenant_query(ImportHistory, profile_id).filter(
         ImportHistory.file_hash == file_hash,
         ImportHistory.processing_status.in_(COMPLETED_STATUSES),
         ImportHistory.total_rows > 0,
@@ -163,9 +163,8 @@ def find_existing_transactions(profile_id: int,
     for start in range(0, len(chunk), batch_size):
         batch = chunk[start:start + batch_size]
         rows = (
-            Transaction.query
+            tenant_query(Transaction, profile_id)
             .filter(
-                Transaction.profile_id == profile_id,
                 Transaction.is_deleted.is_(False),
                 Transaction.row_fingerprint.in_(batch),
             )

@@ -220,7 +220,7 @@ class BaseGenericAdapter(PlatformAdapter):
             return [], file_name, ['No workbook or data provided.'], {}, None
 
         if isinstance(workbook_or_data, openpyxl.Workbook):
-            return list(self._sheets_from_workbook(workbook_or_data)), file_name, [], {}, workbook_or_data
+            return list(self._sheets_from_workbook(workbook_or_data)), file_name, [], {}, None
 
         if isinstance(workbook_or_data, (bytes, io.BytesIO)):
             try:
@@ -388,71 +388,79 @@ class BaseGenericAdapter(PlatformAdapter):
         if not self.SHEET_NAMES:
             return False
         sheets, _name, errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data, file_name)
-        if errors:
-            return False
-        preferred = {_key(sheet_name) for sheet_name in self.SHEET_NAMES}
-        return any(_key(sheet.name) in preferred for sheet in sheets)
+        try:
+            if errors:
+                return False
+            preferred = {_key(sheet_name) for sheet_name in self.SHEET_NAMES}
+            return any(_key(sheet.name) in preferred for sheet in sheets)
+        finally:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
 
     # ------------------------------------------------------------------
     # validation
     # ------------------------------------------------------------------
     def validate(self, workbook_or_data) -> Tuple[bool, List[str]]:
         sheets, _file_name, load_errors, _diagnostics, _wb_ref = self._load_sheets(workbook_or_data)
-        if load_errors:
-            return False, list(load_errors)
-        if not sheets:
-            return False, ['Workbook contains no worksheets.']
+        try:
+            if load_errors:
+                return False, list(load_errors)
+            if not sheets:
+                return False, ['Workbook contains no worksheets.']
 
-        usable, _ignored, _observed = self.sheet_plan(sheets)
-        if not usable:
-            return False, [
-                f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
-                f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
-                f'{len(sheets)} sheet(s): {", ".join(sheet.name for sheet in sheets)}). '
-                f'Recognized column names include: {self._expected_columns_hint()}.'
-            ]
+            usable, _ignored, _observed = self.sheet_plan(sheets)
+            if not usable:
+                return False, [
+                    f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
+                    f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
+                    f'{len(sheets)} sheet(s): {", ".join(sheet.name for sheet in sheets)}). '
+                    f'Recognized column names include: {self._expected_columns_hint()}.'
+                ]
 
-        errors: List[str] = []
-        if self.REQUIRE_ANY_SHEET:
-            accepted = [
-                (sheet, header) for sheet, header in usable
-                if all(field in header['mapping'] for field in self.sheet_required_columns(sheet.name))
-            ]
-            if not accepted:
-                required = sorted({
-                    field
-                    for sheet, _header in usable
-                    for field in self.sheet_required_columns(sheet.name)
-                })
-                errors.append(
-                    f'No {self.PLATFORM_NAME} sheet exposes the required column(s): '
-                    f'{", ".join(FIELD_LABELS.get(f, f) for f in required)}.'
-                )
-        else:
-            sheet, header = usable[0]
-            missing = [field for field in self.REQUIRED_COLUMNS if field not in header['mapping']]
-            if missing:
-                errors.append(
-                    f"Sheet '{sheet.name}' is missing required column(s): "
-                    f"{', '.join(FIELD_LABELS.get(f, f) for f in missing)}. "
-                    f"Columns found: {', '.join(h for h in header['headers'] if h) or '(none)'}."
-                )
+            errors: List[str] = []
+            if self.REQUIRE_ANY_SHEET:
+                accepted = [
+                    (sheet, header) for sheet, header in usable
+                    if all(field in header['mapping'] for field in self.sheet_required_columns(sheet.name))
+                ]
+                if not accepted:
+                    required = sorted({
+                        field
+                        for sheet, _header in usable
+                        for field in self.sheet_required_columns(sheet.name)
+                    })
+                    errors.append(
+                        f'No {self.PLATFORM_NAME} sheet exposes the required column(s): '
+                        f'{", ".join(FIELD_LABELS.get(f, f) for f in required)}.'
+                    )
+            else:
+                sheet, header = usable[0]
+                missing = [field for field in self.REQUIRED_COLUMNS if field not in header['mapping']]
+                if missing:
+                    errors.append(
+                        f"Sheet '{sheet.name}' is missing required column(s): "
+                        f"{', '.join(FIELD_LABELS.get(f, f) for f in missing)}. "
+                        f"Columns found: {', '.join(h for h in header['headers'] if h) or '(none)'}."
+                    )
 
-        if not errors:
-            has_rows = False
-            for sheet, header in usable:
-                for _row_number, _row in self._iter_data_rows(sheet, header):
-                    has_rows = True
-                    break
-                if has_rows:
-                    break
-            if not has_rows:
-                errors.append(
-                    'No data rows found beneath the header row. The file has headers but no '
-                    'transaction rows to import.'
-                )
+            if not errors:
+                has_rows = False
+                for sheet, header in usable:
+                    for _row_number, _row in self._iter_data_rows(sheet, header):
+                        has_rows = True
+                        break
+                    if has_rows:
+                        break
+                if not has_rows:
+                    errors.append(
+                        'No data rows found beneath the header row. The file has headers but no '
+                        'transaction rows to import.'
+                    )
 
-        return (not errors), errors
+            return (not errors), errors
+        finally:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
 
     # ------------------------------------------------------------------
     # parsing
@@ -467,12 +475,16 @@ class BaseGenericAdapter(PlatformAdapter):
         result.metadata["_wb_ref"] = _wb_ref
 
         if load_errors:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.extend(load_errors)
             return result
 
         usable, ignored, observed = self.sheet_plan(sheets)
         result.metadata['sheets_ignored'] = ignored
         if not usable:
+            if _wb_ref and hasattr(_wb_ref, 'close'):
+                _wb_ref.close()
             result.errors.append(
                 f'Unrecognized {self.PLATFORM_NAME} file: no worksheet has a recognizable '
                 f'header row (scanned the first {self.MAX_HEADER_SCAN_ROWS} rows of '
@@ -483,24 +495,29 @@ class BaseGenericAdapter(PlatformAdapter):
 
         header_rows: Dict[str, int] = {}
         sheet_columns: Dict[str, List[str]] = {}
-        
+        for sheet, header in usable:
+            header_rows[sheet.name] = header['row_number']
+            sheet_columns[sheet.name] = sorted(header['mapping'])
+
         def _row_generator():
-            for sheet, header in usable:
-                header_rows[sheet.name] = header['row_number']
-                sheet_columns[sheet.name] = sorted(header['mapping'])
-                for row_number, row in self._iter_data_rows(sheet, header):
-                    raw_data: Dict[str, Any] = {}
-                    headers = header['headers']
-                    for position in range(max(len(headers), len(row))):
-                        if position < len(headers):
-                            key = headers[position] or f'col_{position}'
-                        else:
-                            key = f'col_{position}'
-                        raw_data[key] = row[position] if position < len(row) else None
-                    if len(row) > len(headers):
-                        raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
-                    row_object = self._build_import_row(raw_data, row_number, sheet.name)
-                    yield row_object
+            try:
+                for sheet, header in usable:
+                    for row_number, row in self._iter_data_rows(sheet, header):
+                        raw_data: Dict[str, Any] = {}
+                        headers = header['headers']
+                        for position in range(max(len(headers), len(row))):
+                            if position < len(headers):
+                                key = headers[position] or f'col_{position}'
+                            else:
+                                key = f'col_{position}'
+                            raw_data[key] = row[position] if position < len(row) else None
+                        if len(row) > len(headers):
+                            raw_data['_extra_values'] = [row[i] for i in range(len(headers), len(row))]
+                        row_object = self._build_import_row(raw_data, row_number, sheet.name)
+                        yield row_object
+            finally:
+                if _wb_ref and hasattr(_wb_ref, 'close'):
+                    _wb_ref.close()
 
         result.rows = _row_generator()
         

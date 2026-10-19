@@ -4,15 +4,15 @@ from app.adapters.registry import detect_platform, get_adapter
 
 ADAPTERS_TO_TEST = [
     ("custom_excel", "Custom_Excel", True), 
-    ("jiomart", "JioMart", False),
-    ("snapdeal", "Snapdeal", False),
-    ("tatacliq", "TataCLiQ", False),
-    ("limeroad", "Limeroad", False),
-    ("shopdeck", "Shopdeck", False),
-    ("glowroad", "GlowRoad", False),
-    ("snapmint", "Snapmint", False),
-    ("citymall", "Citymall", False),
-    ("roposo", "Roposo", False)
+    ("jiomart", "JioMart", True),
+    ("snapdeal", "Snapdeal", True),
+    ("tatacliq", "TataCLiQ", True),
+    ("limeroad", "Limeroad", True),
+    ("shopdeck", "Shopdeck", True),
+    ("glowroad", "GlowRoad", True),
+    ("snapmint", "Snapmint", True),
+    ("citymall", "Citymall", True),
+    ("roposo", "Roposo", True)
 ]
 
 @pytest.mark.parametrize("filename_prefix, expected_platform, is_doc", ADAPTERS_TO_TEST)

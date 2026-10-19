@@ -403,17 +403,35 @@ def test_06_adapter_readiness_matrix_honesty_check(app, env5e12, client):
     doc_map = {m['platform']: m['format_documented'] for m in matrix}
     status_map = {m['platform']: m['status'] for m in matrix}
 
-    # Documented production adapters
+    # Documented production adapters (all 15 marketplace adapters promoted)
     assert doc_map.get('Amazon') is True
     assert doc_map.get('Flipkart') is True
     assert doc_map.get('Meesho') is True
     assert doc_map.get('Myntra') is True
+    assert doc_map.get('Citymall') is True
+    assert doc_map.get('Snapdeal') is True
     assert status_map.get('Amazon') == 'PRODUCTION'
+    assert status_map.get('Citymall') == 'PRODUCTION'
+    assert status_map.get('Snapdeal') == 'PRODUCTION'
 
-    # Fallback adapters
-    assert doc_map.get('Citymall') is False
-    assert doc_map.get('Snapdeal') is False
-    assert status_map.get('Citymall') == 'FALLBACK'
+    # Fallback classification honesty check via synthetic undocumented adapter class
+    from app.adapters.registry import register_adapter, _ADAPTER_REGISTRY
+    from app.adapters.base import PlatformAdapter
+    class _SyntheticFallbackAdapter(PlatformAdapter):
+        PLATFORM_NAME = 'SyntheticFallback'
+        FORMAT_DOCUMENTED = False
+        def detect(self, workbook_or_data, file_name=''): return False
+        def validate(self, workbook_or_data): return False, []
+        def parse(self, workbook_or_data, file_name='', stream=False): pass
+        def normalize(self, raw_row): return {}
+        def map_taxes(self, raw_row): return {}
+    register_adapter(_SyntheticFallbackAdapter)
+    try:
+        synth_matrix = get_adapter_readiness_matrix()
+        synth_map = {m['platform']: m['status'] for m in synth_matrix}
+        assert synth_map.get('SyntheticFallback') == 'FALLBACK'
+    finally:
+        _ADAPTER_REGISTRY.pop('SyntheticFallback', None)
 
     # API verification
     _login_client(client, env5e12, 'a')

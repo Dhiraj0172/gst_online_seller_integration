@@ -51,6 +51,8 @@ class CanonicalTransaction:
     cess_amount: Decimal = Decimal('0')
     tax_rate: Decimal = Decimal('0')
     invoice_value: Decimal = Decimal('0')
+    tcs_amount: Decimal = Decimal('0')
+    transaction_type: Optional[str] = None
     supply_type: Optional[str] = None
     reverse_charge: str = 'N'
     ecommerce_gstin: Optional[str] = None
@@ -67,6 +69,21 @@ class CanonicalTransaction:
     amendment_flag: bool = False
     tax_rate_derived: bool = False
     source_metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def buyer_gstin(self) -> Optional[str]:
+        """Alias for customer_gstin."""
+        return self.customer_gstin
+
+    @property
+    def hsn_code(self) -> Optional[str]:
+        """Alias for hsn_sac."""
+        return self.hsn_sac
+
+    @property
+    def gst_rate(self) -> Decimal:
+        """Alias for tax_rate."""
+        return self.tax_rate
 
     @property
     def total_tax(self) -> Decimal:
@@ -115,6 +132,8 @@ class CanonicalTransaction:
             'cess_amount': self.cess_amount,
             'tax_rate': self.tax_rate,
             'invoice_value': self.invoice_value,
+            'tcs_amount': self.tcs_amount,
+            'transaction_type': self.transaction_type,
             'supply_type': self.supply_type,
             'reverse_charge': self.reverse_charge,
             'ecommerce_gstin': self.ecommerce_gstin,
@@ -199,6 +218,8 @@ class CanonicalTransaction:
             cess_amount=_to_dec(data.get('cess_amount')),
             tax_rate=_to_dec(data.get('tax_rate')),
             invoice_value=_to_dec(data.get('invoice_value')),
+            tcs_amount=_to_dec(data.get('tcs_amount')),
+            transaction_type=str(data.get('transaction_type') or data.get('supply_type') or '') or None,
             supply_type=str(data.get('supply_type') or '') or None,
             reverse_charge='Y' if str(data.get('reverse_charge') or '').strip().upper() in ('Y', 'YES', 'TRUE', '1') else 'N',
             ecommerce_gstin=str(data.get('ecommerce_gstin') or '') or None,

@@ -40,7 +40,7 @@ class GSTR1GovtAdapter(BaseGSTR1GovtAdapter):
     """Production adapter for official GSTR-1 multi-sheet workbooks."""
 
     PLATFORM_NAME = 'GSTR1_Govt'
-    SUPPORTED_FILE_TYPES = ['.xlsx']
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
     INSTRUCTIONS = (
         'Official GSTR-1 workbook produced by the GST portal offline tool. '
         'Supported sheets: b2b, b2ba, b2cl, b2cla, b2cs, b2csa, cdnr, cdnra, '

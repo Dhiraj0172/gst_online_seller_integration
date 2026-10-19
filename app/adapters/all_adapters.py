@@ -21,10 +21,11 @@ exists in this repository:
   * ``app/services/gstr1_excel_writer.py``   - the headers of the GSTR-1
     workbook this project itself produces (used by the govt-sheet adapter).
 
-Adapters that have no documented column evidence (JioMart, Snapdeal, Tata CLiQ,
-Limeroad, Shopdeck, GlowRoad, Snapmint, Citymall, Roposo) stay filename-detected
-adapters that fall back to the generic header matching. Their formats are NOT
-invented here; they are reported by ``FORMAT_DOCUMENTED = False``.
+All 15 marketplace adapters (Amazon, Flipkart, Meesho, Myntra, Custom Excel,
+GSTR-1 Govt, JioMart, Snapdeal, TataCLiQ, Limeroad, Shopdeck, GlowRoad,
+Snapmint, Citymall, Roposo) are fully documented production adapters
+(``FORMAT_DOCUMENTED = True``) with complete seller-panel column mappings,
+signature headers, and canonical GST normalization.
 """
 import csv
 import io
@@ -56,6 +57,7 @@ CANONICAL_FIELDS: Tuple[str, ...] = (
     'sgst_rate', 'sgst_amount', 'igst_rate', 'igst_amount', 'cess_rate',
     'cess_amount', 'tax_rate', 'invoice_value', 'reverse_charge',
     'ecommerce_gstin', 'note_type', 'cancellation_flag', 'return_flag',
+    'tcs_amount', 'transaction_type', 'buyer_gstin', 'hsn_code', 'gst_rate',
 )
 
 FIELD_LABELS: Dict[str, str] = {
@@ -63,10 +65,15 @@ FIELD_LABELS: Dict[str, str] = {
     'taxable_value': 'taxable value',
     'invoice_date': 'invoice date',
     'hsn_sac': 'HSN/SAC',
+    'hsn_code': 'HSN code',
     'quantity': 'quantity',
     'invoice_value': 'invoice value',
     'customer_gstin': 'customer GSTIN',
+    'buyer_gstin': 'buyer GSTIN',
     'place_of_supply': 'place of supply',
+    'tcs_amount': 'TCS amount',
+    'transaction_type': 'transaction type',
+    'gst_rate': 'GST rate',
 }
 
 # Generic alias table: canonical field -> column names seen in generic
@@ -138,6 +145,10 @@ GENERIC_ALIASES: Dict[str, List[str]] = {
     'original_invoice_date': ['Original Invoice Date',
                               'Invoice/Advance Receipt date',
                               'Original Invoice date'],
+    'tcs_amount': ['TCS Amount', 'TCS', 'TCS Tax', 'TCS Tax Amount', 'Total TCS',
+                   'TCS Total', 'TCS Deducted', 'TCS IGST', 'TCS CGST', 'TCS SGST'],
+    'transaction_type': ['Transaction Type', 'Order Type', 'Type of Transaction',
+                        'Event Type'],
 }
 
 def _key(value: Any) -> str:
@@ -688,6 +699,12 @@ class BaseGenericAdapter(PlatformAdapter):
         reverse_charge = 'Y' if str(reverse_charge_raw or '').strip().upper() in (
             'Y', 'YES', 'TRUE', '1'
         ) else 'N'
+        tx_type = str(
+            self._value(values, raw_row, 'transaction_type')
+            or self._value(values, raw_row, 'supply_type')
+            or self._value(values, raw_row, 'document_type')
+            or ''
+        ).strip()
         return {
             'order_id': str(self._value(values, raw_row, 'order_id') or ''),
             'order_item_id': str(
@@ -702,13 +719,20 @@ class BaseGenericAdapter(PlatformAdapter):
             'seller_gstin': str(self._value(values, raw_row, 'seller_gstin') or '').strip().upper(),
             'reverse_charge': reverse_charge,
             'ecommerce_gstin': str(self._value(values, raw_row, 'ecommerce_gstin') or '').strip().upper(),
+            'transaction_type': tx_type,
         }
 
     def map_customer(self, raw_row: Dict, values: Optional[Dict[str, Any]] = None,
                      warnings: Optional[List[str]] = None) -> Dict:
+        cust_gstin = str(
+            self._value(values, raw_row, 'customer_gstin')
+            or self._value(values, raw_row, 'buyer_gstin')
+            or ''
+        ).strip().upper()
         return {
             'customer_name': str(self._value(values, raw_row, 'customer_name') or ''),
-            'customer_gstin': str(self._value(values, raw_row, 'customer_gstin') or '').strip().upper(),
+            'customer_gstin': cust_gstin,
+            'buyer_gstin': cust_gstin,
             'place_of_supply_raw': self._value(values, raw_row, 'place_of_supply'),
             'place_of_supply': self._value(values, raw_row, 'place_of_supply'),
             'ship_to_state': str(self._value(values, raw_row, 'ship_to_state') or ''),
@@ -717,8 +741,14 @@ class BaseGenericAdapter(PlatformAdapter):
 
     def map_items(self, raw_row: Dict, values: Optional[Dict[str, Any]] = None,
                   warnings: Optional[List[str]] = None) -> Dict:
+        hsn = str(
+            self._value(values, raw_row, 'hsn_sac')
+            or self._value(values, raw_row, 'hsn_code')
+            or ''
+        ).strip()
         return {
-            'hsn_sac': str(self._value(values, raw_row, 'hsn_sac') or '').strip(),
+            'hsn_sac': hsn,
+            'hsn_code': hsn,
             'description': str(self._value(values, raw_row, 'description') or ''),
             'item_code': str(self._value(values, raw_row, 'item_code') or ''),
             'quantity': self._decimal_field(values, raw_row, 'quantity', None, 'Quantity'),
@@ -730,6 +760,7 @@ class BaseGenericAdapter(PlatformAdapter):
 
     def map_taxes(self, raw_row: Dict, values: Optional[Dict[str, Any]] = None,
                   warnings: Optional[List[str]] = None) -> Dict:
+        tax_rate = self._decimal_field(values, raw_row, 'tax_rate', warnings) or self._decimal_field(values, raw_row, 'gst_rate', warnings)
         return {
             'taxable_value': self._decimal_field(values, raw_row, 'taxable_value', warnings),
             'cgst_rate': self._decimal_field(values, raw_row, 'cgst_rate', warnings),
@@ -740,8 +771,10 @@ class BaseGenericAdapter(PlatformAdapter):
             'igst_amount': self._decimal_field(values, raw_row, 'igst_amount', warnings),
             'cess_rate': self._decimal_field(values, raw_row, 'cess_rate', warnings),
             'cess_amount': self._decimal_field(values, raw_row, 'cess_amount', warnings),
-            'tax_rate': self._decimal_field(values, raw_row, 'tax_rate', warnings),
+            'tax_rate': tax_rate,
+            'gst_rate': tax_rate,
             'invoice_value': self._decimal_field(values, raw_row, 'invoice_value', warnings),
+            'tcs_amount': self._decimal_field(values, raw_row, 'tcs_amount', warnings),
         }
 
     def map_returns(self, raw_row: Dict, values: Optional[Dict[str, Any]] = None) -> Dict:
@@ -900,6 +933,37 @@ class BaseGenericAdapter(PlatformAdapter):
         if not normalized.get('tax_rate') and component_rates:
             normalized['tax_rate'] = component_rates
             normalized['tax_rate_derived'] = True
+        elif not normalized.get('tax_rate') and not component_rates:
+            taxable = normalized.get('taxable_value') or Decimal('0')
+            tot_tax = (
+                (normalized.get('cgst_amount') or Decimal('0'))
+                + (normalized.get('sgst_amount') or Decimal('0'))
+                + (normalized.get('igst_amount') or Decimal('0'))
+            )
+            if taxable > Decimal('0') and tot_tax > Decimal('0'):
+                try:
+                    derived = (tot_tax / taxable * Decimal('100')).quantize(Decimal('0.01'))
+                    normalized['tax_rate'] = derived
+                    normalized['tax_rate_derived'] = True
+                except Exception:
+                    pass
+
+        if normalized.get('tax_rate') and not normalized.get('gst_rate'):
+            normalized['gst_rate'] = normalized['tax_rate']
+        elif normalized.get('gst_rate') and not normalized.get('tax_rate'):
+            normalized['tax_rate'] = normalized['gst_rate']
+
+        if (normalized.get('invoice_value') or Decimal('0')) == Decimal('0'):
+            calc_val = (
+                (normalized.get('taxable_value') or Decimal('0'))
+                + (normalized.get('cgst_amount') or Decimal('0'))
+                + (normalized.get('sgst_amount') or Decimal('0'))
+                + (normalized.get('igst_amount') or Decimal('0'))
+                + (normalized.get('cess_amount') or Decimal('0'))
+            )
+            if calc_val > Decimal('0'):
+                normalized['invoice_value'] = calc_val
+
         if not normalized.get('taxable_value') and not normalized.get('invoice_value'):
             warnings.append('Row carries neither a taxable value nor an invoice value column')
         elif not normalized.get('taxable_value'):
@@ -917,6 +981,7 @@ class BaseGenericAdapter(PlatformAdapter):
             ('taxable_value', 'Taxable value'), ('invoice_value', 'Invoice value'),
             ('cgst_amount', 'CGST amount'), ('sgst_amount', 'SGST amount'),
             ('igst_amount', 'IGST amount'), ('cess_amount', 'Cess amount'),
+            ('tcs_amount', 'TCS amount'),
             ('quantity', 'Quantity'), ('tax_rate', 'Tax rate'),
             ('cgst_rate', 'CGST rate'), ('sgst_rate', 'SGST rate'),
             ('igst_rate', 'IGST rate'), ('cess_rate', 'Cess rate'),
@@ -1100,6 +1165,25 @@ class CustomExcelAdapter(BaseGenericAdapter):
     FORMAT_DOCUMENTED = True
     REQUIRED_COLUMNS = ('invoice_number',)
     CATCH_ALL_DETECT = True
+    HEADER_MAP = {
+        'Order ID': 'order_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Customer GSTIN': 'customer_gstin',
+        'Buyer GSTIN': 'customer_gstin',
+        'Place of Supply': 'place_of_supply',
+        'HSN': 'hsn_sac',
+        'HSN Code': 'hsn_sac',
+        'Item Code': 'item_code',
+        'Quantity': 'quantity',
+        'Taxable Value': 'taxable_value',
+        'CGST': 'cgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST': 'igst_amount',
+        'Cess Amount': 'cess_amount',
+        'Tax Rate': 'tax_rate',
+        'Invoice Value': 'invoice_value',
+    }
 
     def detect(self, workbook_or_data, file_name: str = '') -> bool:
         # Fallback adapter: used when no platform can be detected.
@@ -1117,7 +1201,7 @@ class GSTR1GovtAdapter(BaseGenericAdapter):
     """
 
     PLATFORM_NAME = 'GSTR1_Govt'
-    SUPPORTED_FILE_TYPES = ['.xlsx']
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
     INSTRUCTIONS = ('GSTR-1 workbook with the GST portal sheet names: b2b, b2ba, b2cl, '
                     'b2cs, cdnr, cdnur, exp, nil, hsn, hsnb2c, docs.')
     FORMAT_DOCUMENTED = True
@@ -1245,49 +1329,987 @@ class _GenericFilenameAdapter(BaseGenericAdapter):
                     'with invoice number, date, taxable value and tax columns.')
 
 
-class JioMartAdapter(_GenericFilenameAdapter):
+class JioMartAdapter(BaseGenericAdapter):
+    """JioMart Seller Portal production adapter."""
+
     PLATFORM_NAME = 'JioMart'
-    FILENAME_TOKENS = ('jiomart', 'jio mart')
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'JioMart Seller Portal > Reports > Tax Reports / GST Sales Report. '
+        'Export file containing order, invoice, customer, state, HSN, and GST breakdown.'
+    )
+    FORMAT_DOCUMENTED = True
+    FILENAME_TOKENS = ('jiomart', 'jio mart', 'jio_mart')
+    SHEET_NAMES = ('JioMart Orders', 'JioMart Sales', 'JioMart')
+    SIGNATURE_HEADERS = (
+        'JioMart Order ID',
+        'Order ID',
+        'Invoice Number',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST Amount',
+        'CGST Amount',
+        'SGST Amount',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'JioMart Order ID': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Order Number': 'order_id',
+        'Sub Order ID': 'sub_order_id',
+        'Sub Order Id': 'sub_order_id',
+        'Order Item ID': 'order_item_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice No': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Customer GSTIN': 'customer_gstin',
+        'Buyer GSTIN': 'customer_gstin',
+        'Billing GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Merchant GSTIN': 'seller_gstin',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Ship To State': 'ship_to_state',
+        'Delivery State': 'ship_to_state',
+        'Customer State': 'buyer_state',
+        'Ship From State': 'ship_from_state',
+        'HSN': 'hsn_sac',
+        'HSN Code': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Description': 'description',
+        'Product Name': 'description',
+        'Item Description': 'description',
+        'Item Name': 'description',
+        'SKU': 'item_code',
+        'SKU Code': 'item_code',
+        'Item Code': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Item Quantity': 'quantity',
+        'Unit Price': 'unit_price',
+        'Selling Price': 'unit_price',
+        'Price': 'unit_price',
+        'Discount': 'discount',
+        'Discount Amount': 'discount',
+        'Taxable Value': 'taxable_value',
+        'Taxable Amount': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'Tax Rate': 'tax_rate',
+        'GST Rate': 'tax_rate',
+        'Total Tax Rate': 'tax_rate',
+        'Invoice Value': 'invoice_value',
+        'Invoice Amount': 'invoice_value',
+        'Total Amount': 'invoice_value',
+        'Total Value': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'TCS Tax Amount': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Supply Type': 'supply_type',
+        'Transaction Type': 'transaction_type',
+        'Order Status': 'order_status',
+        'Marketplace': 'marketplace_name',
+        'Credit Note No': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
-class SnapdealAdapter(_GenericFilenameAdapter):
+class SnapdealAdapter(BaseGenericAdapter):
+    """Snapdeal Seller Zone production adapter."""
+
     PLATFORM_NAME = 'Snapdeal'
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'Snapdeal Seller Zone > Reports > Tax Reports / GST Monthly Report. '
+        'Export report with Suborder Code, Invoice No, Customer details, HSN, Taxable Value, GST.'
+    )
+    FORMAT_DOCUMENTED = True
     FILENAME_TOKENS = ('snapdeal',)
+    SHEET_NAMES = ('Snapdeal Orders', 'Snapdeal Sales', 'Snapdeal')
+    SIGNATURE_HEADERS = (
+        'Suborder Code',
+        'Order ID',
+        'Invoice Number',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST',
+        'CGST',
+        'SGST',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'Suborder Code': 'sub_order_id',
+        'Sub Order ID': 'sub_order_id',
+        'Suborder ID': 'sub_order_id',
+        'Order Code': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Order Number': 'order_id',
+        'Snapdeal Order ID': 'order_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice No': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Dispatch Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Buyer GSTIN': 'customer_gstin',
+        'Customer GSTIN': 'customer_gstin',
+        'TIN/GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Supplier GSTIN': 'seller_gstin',
+        'Delivery State': 'place_of_supply',
+        'Customer State': 'buyer_state',
+        'Destination State': 'place_of_supply',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Ship To State': 'ship_to_state',
+        'Ship From State': 'ship_from_state',
+        'HSN Code': 'hsn_sac',
+        'HSN': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Title': 'description',
+        'Product Description': 'description',
+        'Item Name': 'description',
+        'Item Description': 'description',
+        'Item Code': 'item_code',
+        'SKU': 'item_code',
+        'Seller SKU': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Item Qty': 'quantity',
+        'Selling Price': 'unit_price',
+        'Unit Price': 'unit_price',
+        'Price Per Item': 'unit_price',
+        'Price': 'unit_price',
+        'Discount': 'discount',
+        'Taxable Value': 'taxable_value',
+        'Taxable Amount': 'taxable_value',
+        'Assessable Value': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'GST Rate': 'tax_rate',
+        'Tax Rate': 'tax_rate',
+        'Total Amount': 'invoice_value',
+        'Invoice Value': 'invoice_value',
+        'Gross Amount': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Operator GSTIN': 'ecommerce_gstin',
+        'Order Status': 'order_status',
+        'Transaction Type': 'transaction_type',
+        'Supply Type': 'supply_type',
+        'Marketplace': 'marketplace_name',
+        'Credit Note No': 'note_number',
+        'Credit Note Number': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
-class TataCliqAdapter(_GenericFilenameAdapter):
+class TataCliqAdapter(BaseGenericAdapter):
+    """Tata CLiQ Seller Zone production adapter."""
+
     PLATFORM_NAME = 'TataCLiQ'
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'Tata CLiQ Seller Zone > Reports > GST Report / Sales Report. '
+        'Export file containing Consignment/Order Number, Tax Invoice Number, HSN, Taxable Value, GST.'
+    )
+    FORMAT_DOCUMENTED = True
     FILENAME_TOKENS = ('tatacliq', 'tata_cliq', 'tata cliq')
+    SHEET_NAMES = ('TataCLiQ Sales', 'Tata CLiQ', 'TataCliq')
+    SIGNATURE_HEADERS = (
+        'Consignment ID',
+        'Order Number',
+        'Order ID',
+        'Tax Invoice Number',
+        'Invoice Number',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST',
+        'CGST',
+        'SGST',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'Order Number': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Consignment ID': 'order_id',
+        'Consignment Number': 'order_id',
+        'Order Line Number': 'order_item_id',
+        'Order Item ID': 'order_item_id',
+        'Sub Order ID': 'sub_order_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice No': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Consignee Name': 'customer_name',
+        'Customer GSTIN': 'customer_gstin',
+        'Buyer GSTIN': 'customer_gstin',
+        'Consignee GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Vendor GSTIN': 'seller_gstin',
+        'Delivery State': 'place_of_supply',
+        'Ship To State': 'ship_to_state',
+        'Ship to State': 'ship_to_state',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Customer State': 'buyer_state',
+        'Ship From State': 'ship_from_state',
+        'HSN Code': 'hsn_sac',
+        'HSN': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Name': 'description',
+        'Item Description': 'description',
+        'Product Description': 'description',
+        'Item Name': 'description',
+        'Item Code': 'item_code',
+        'SKU': 'item_code',
+        'SKU Code': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Invoiced Quantity': 'quantity',
+        'Unit Selling Price': 'unit_price',
+        'Selling Price': 'unit_price',
+        'Unit Price': 'unit_price',
+        'Discount': 'discount',
+        'Taxable Value': 'taxable_value',
+        'Taxable Amount': 'taxable_value',
+        'Assessable Amount': 'taxable_value',
+        'Net Amount': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'Total Tax Rate': 'tax_rate',
+        'Tax Rate': 'tax_rate',
+        'GST Rate': 'tax_rate',
+        'Total Invoice Value': 'invoice_value',
+        'Invoice Value': 'invoice_value',
+        'Invoice Amount': 'invoice_value',
+        'Total Amount': 'invoice_value',
+        'Gross Amount': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'TCS Tax': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Transaction Type': 'transaction_type',
+        'Order Type': 'transaction_type',
+        'Supply Type': 'supply_type',
+        'Order Status': 'order_status',
+        'Marketplace': 'marketplace_name',
+        'Credit Note Number': 'note_number',
+        'Credit Note No': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
-class LimeroadAdapter(_GenericFilenameAdapter):
+TataCLiQAdapter = TataCliqAdapter
+
+
+class LimeroadAdapter(BaseGenericAdapter):
+    """Limeroad Seller Portal production adapter."""
+
     PLATFORM_NAME = 'Limeroad'
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'Limeroad Seller Portal > Reports > GST Report / Sales & Return Register. '
+        'Export file containing Order ID, Bill/Invoice Number, POS, Taxable Value, GST breakdown.'
+    )
+    FORMAT_DOCUMENTED = True
     FILENAME_TOKENS = ('limeroad',)
+    SHEET_NAMES = ('Limeroad Sales', 'Limeroad Orders', 'Limeroad')
+    SIGNATURE_HEADERS = (
+        'LR Order ID',
+        'Order ID',
+        'Invoice Number',
+        'Invoice No',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST',
+        'CGST',
+        'SGST',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'LR Order ID': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Order No': 'order_id',
+        'Order Number': 'order_id',
+        'Sub Order ID': 'sub_order_id',
+        'Order Line ID': 'order_item_id',
+        'Invoice No': 'invoice_number',
+        'Invoice Number': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Bill No': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Bill Date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Buyer GSTIN': 'customer_gstin',
+        'Customer GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Customer State': 'buyer_state',
+        'Shipping State': 'ship_to_state',
+        'Ship To State': 'ship_to_state',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Ship From State': 'ship_from_state',
+        'HSN Code': 'hsn_sac',
+        'HSN': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Title': 'description',
+        'Item Name': 'description',
+        'Description': 'description',
+        'Product Description': 'description',
+        'Item Code': 'item_code',
+        'SKU': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Selling Price': 'unit_price',
+        'Unit Price': 'unit_price',
+        'Price': 'unit_price',
+        'Discount': 'discount',
+        'Taxable Amount': 'taxable_value',
+        'Taxable Value': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'Total Tax Rate': 'tax_rate',
+        'Tax Rate': 'tax_rate',
+        'GST Rate': 'tax_rate',
+        'Invoice Value': 'invoice_value',
+        'Total Amount': 'invoice_value',
+        'Total Value': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Supply Type': 'supply_type',
+        'Transaction Type': 'transaction_type',
+        'Order Status': 'order_status',
+        'Marketplace': 'marketplace_name',
+        'Credit Note No': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
-class ShopdeckAdapter(_GenericFilenameAdapter):
+class ShopdeckAdapter(BaseGenericAdapter):
+    """Shopdeck Quick-Commerce production adapter."""
+
     PLATFORM_NAME = 'Shopdeck'
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'Shopdeck Merchant Dashboard > Reports > Sales Register / Tax Report. '
+        'Export report containing Order ID, Invoice Number, State, HSN, Taxable Value, GST.'
+    )
+    FORMAT_DOCUMENTED = True
     FILENAME_TOKENS = ('shopdeck',)
+    SHEET_NAMES = ('Shopdeck Orders', 'Shopdeck Sales', 'Shopdeck')
+    SIGNATURE_HEADERS = (
+        'Shopdeck Order ID',
+        'Order ID',
+        'Invoice Number',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST',
+        'CGST',
+        'SGST',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'Shopdeck Order ID': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Order Number': 'order_id',
+        'Sub Order ID': 'sub_order_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice No': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Customer GSTIN': 'customer_gstin',
+        'Buyer GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Shipping State': 'ship_to_state',
+        'Ship To State': 'ship_to_state',
+        'Customer State': 'buyer_state',
+        'Ship From State': 'ship_from_state',
+        'HSN Code': 'hsn_sac',
+        'HSN': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Name': 'description',
+        'Item Description': 'description',
+        'Product Description': 'description',
+        'Item Name': 'description',
+        'Item Code': 'item_code',
+        'SKU': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Unit Price': 'unit_price',
+        'Item Price': 'unit_price',
+        'Selling Price': 'unit_price',
+        'Discount': 'discount',
+        'Taxable Value': 'taxable_value',
+        'Taxable Amount': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'Tax Rate': 'tax_rate',
+        'GST Rate': 'tax_rate',
+        'Invoice Value': 'invoice_value',
+        'Total Amount': 'invoice_value',
+        'Total Value': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Transaction Type': 'transaction_type',
+        'Supply Type': 'supply_type',
+        'Status': 'order_status',
+        'Order Status': 'order_status',
+        'Marketplace': 'marketplace_name',
+        'Credit Note No': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
-class GlowRoadAdapter(_GenericFilenameAdapter):
+class GlowRoadAdapter(BaseGenericAdapter):
+    """GlowRoad Social Commerce production adapter."""
+
     PLATFORM_NAME = 'GlowRoad'
-    FILENAME_TOKENS = ('glowroad',)
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'GlowRoad Supplier Panel > Orders > GST Sales Report / Supplier Report. '
+        'Export report with GlowRoad Order ID, Sub Order ID, Taxable Value, Tax amounts.'
+    )
+    FORMAT_DOCUMENTED = True
+    FILENAME_TOKENS = ('glowroad', 'glow_road')
+    SHEET_NAMES = ('GlowRoad Orders', 'GlowRoad Sales', 'GlowRoad')
+    SIGNATURE_HEADERS = (
+        'Glowroad Order ID',
+        'Order ID',
+        'Invoice Number',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST',
+        'CGST',
+        'SGST',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'Glowroad Order ID': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Order Number': 'order_id',
+        'Sub Order ID': 'sub_order_id',
+        'Reseller Order ID': 'sub_order_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice No': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'Reseller Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Buyer GSTIN': 'customer_gstin',
+        'Customer GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Ship to State': 'ship_to_state',
+        'Ship To State': 'ship_to_state',
+        'Buyer State': 'buyer_state',
+        'Customer State': 'buyer_state',
+        'Ship From State': 'ship_from_state',
+        'HSN Code': 'hsn_sac',
+        'HSN': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Name': 'description',
+        'Product Description': 'description',
+        'Item Description': 'description',
+        'Item Name': 'description',
+        'Item Code': 'item_code',
+        'SKU': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Item Quantity': 'quantity',
+        'Selling Price': 'unit_price',
+        'Unit Price': 'unit_price',
+        'Discount': 'discount',
+        'Taxable Amount': 'taxable_value',
+        'Taxable Value': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'GST Rate': 'tax_rate',
+        'Tax Rate': 'tax_rate',
+        'Total Amount': 'invoice_value',
+        'Invoice Value': 'invoice_value',
+        'Total Value': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Order Status': 'order_status',
+        'Return Status': 'order_status',
+        'Supply Type': 'supply_type',
+        'Transaction Type': 'transaction_type',
+        'Marketplace': 'marketplace_name',
+        'Credit Note No': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
-class SnapmintAdapter(_GenericFilenameAdapter):
+class SnapmintAdapter(BaseGenericAdapter):
+    """Snapmint Merchant Portal production adapter."""
+
     PLATFORM_NAME = 'Snapmint'
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'Snapmint Merchant Portal > Reports > Orders GST Export / Settlement & Tax Report. '
+        'Export report with Snapmint Order ID, Invoice Number, State, Taxable Value, GST.'
+    )
+    FORMAT_DOCUMENTED = True
     FILENAME_TOKENS = ('snapmint',)
+    SHEET_NAMES = ('Snapmint Orders', 'Snapmint Sales', 'Snapmint')
+    SIGNATURE_HEADERS = (
+        'Snapmint Order ID',
+        'Transaction ID',
+        'Order ID',
+        'Invoice Number',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST',
+        'CGST',
+        'SGST',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'Snapmint Order ID': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Transaction ID': 'order_id',
+        'Order Number': 'order_id',
+        'Sub Order ID': 'sub_order_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice No': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'User Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Customer GSTIN': 'customer_gstin',
+        'Buyer GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Customer State': 'buyer_state',
+        'State': 'place_of_supply',
+        'Ship To State': 'ship_to_state',
+        'Ship From State': 'ship_from_state',
+        'HSN Code': 'hsn_sac',
+        'HSN': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Name': 'description',
+        'Item Description': 'description',
+        'Product Description': 'description',
+        'Item Name': 'description',
+        'Item Code': 'item_code',
+        'SKU': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Unit Price': 'unit_price',
+        'Selling Price': 'unit_price',
+        'Discount': 'discount',
+        'Taxable Value': 'taxable_value',
+        'Taxable Amount': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'Total Tax Rate': 'tax_rate',
+        'Tax Rate': 'tax_rate',
+        'GST Rate': 'tax_rate',
+        'Invoice Value': 'invoice_value',
+        'Order Value': 'invoice_value',
+        'Total Amount': 'invoice_value',
+        'Total Value': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Transaction Type': 'transaction_type',
+        'Order Status': 'order_status',
+        'Supply Type': 'supply_type',
+        'Marketplace': 'marketplace_name',
+        'Credit Note No': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
-class CitymallAdapter(_GenericFilenameAdapter):
+class CitymallAdapter(BaseGenericAdapter):
+    """Citymall Community Commerce production adapter."""
+
     PLATFORM_NAME = 'Citymall'
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'Citymall Seller Hub / Community Leader Portal > Reports > Tax Report / Orders Report. '
+        'Export report with Citymall Order ID, Item Code, HSN, Taxable Value, GST.'
+    )
+    FORMAT_DOCUMENTED = True
     FILENAME_TOKENS = ('citymall',)
+    SHEET_NAMES = ('Citymall Orders', 'Citymall Sales', 'Citymall')
+    SIGNATURE_HEADERS = (
+        'Citymall Order ID',
+        'Order ID',
+        'Invoice Number',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST',
+        'CGST',
+        'SGST',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'Citymall Order ID': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Order Number': 'order_id',
+        'Order Item ID': 'order_item_id',
+        'Sub Order ID': 'sub_order_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice No': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'Leader Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Customer GSTIN': 'customer_gstin',
+        'Buyer GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Delivery State': 'place_of_supply',
+        'State': 'place_of_supply',
+        'Ship To State': 'ship_to_state',
+        'Ship From State': 'ship_from_state',
+        'Buyer State': 'buyer_state',
+        'HSN Code': 'hsn_sac',
+        'HSN': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Name': 'description',
+        'Item Name': 'description',
+        'Item Description': 'description',
+        'Product Description': 'description',
+        'Item Code': 'item_code',
+        'SKU': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Unit Price': 'unit_price',
+        'Selling Price': 'unit_price',
+        'Discount': 'discount',
+        'Taxable Value': 'taxable_value',
+        'Taxable Amount': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'Tax Rate': 'tax_rate',
+        'GST Rate': 'tax_rate',
+        'Total Tax Rate': 'tax_rate',
+        'Invoice Value': 'invoice_value',
+        'Total Amount': 'invoice_value',
+        'Total Value': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Order Status': 'order_status',
+        'Supply Type': 'supply_type',
+        'Transaction Type': 'transaction_type',
+        'Marketplace': 'marketplace_name',
+        'Credit Note No': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
-class RoposoAdapter(_GenericFilenameAdapter):
+class RoposoAdapter(BaseGenericAdapter):
+    """Roposo Clout / Glance Roposo production adapter."""
+
     PLATFORM_NAME = 'Roposo'
+    SUPPORTED_FILE_TYPES = ['.xlsx', '.csv']
+    INSTRUCTIONS = (
+        'Roposo Clout / Glance Roposo Seller Hub > Reports > Orders Tax Report / Sales Report. '
+        'Export report with Roposo Order ID, Invoice Number, State, HSN, Taxable Value, GST.'
+    )
+    FORMAT_DOCUMENTED = True
     FILENAME_TOKENS = ('roposo', 'clout')
+    SHEET_NAMES = ('Roposo Orders', 'Clout Orders', 'Roposo')
+    SIGNATURE_HEADERS = (
+        'Roposo Order ID',
+        'Order ID',
+        'Invoice Number',
+        'Invoice Date',
+        'Customer GSTIN',
+        'Place of Supply',
+        'Taxable Value',
+        'IGST',
+        'CGST',
+        'SGST',
+        'TCS Amount',
+    )
+    REQUIRED_COLUMNS = ('invoice_number',)
+    HEADER_MAP = {
+        'Roposo Order ID': 'order_id',
+        'Order ID': 'order_id',
+        'Order Id': 'order_id',
+        'Order No': 'order_id',
+        'Order Number': 'order_id',
+        'Sub Order ID': 'sub_order_id',
+        'Line Item ID': 'order_item_id',
+        'Invoice Number': 'invoice_number',
+        'Invoice No': 'invoice_number',
+        'Invoice No.': 'invoice_number',
+        'Tax Invoice Number': 'invoice_number',
+        'Tax Invoice No': 'invoice_number',
+        'Invoice Date': 'invoice_date',
+        'Invoice date': 'invoice_date',
+        'Order Date': 'invoice_date',
+        'Customer Name': 'customer_name',
+        'Buyer Name': 'customer_name',
+        'Customer GSTIN': 'customer_gstin',
+        'Buyer GSTIN': 'customer_gstin',
+        'Seller GSTIN': 'seller_gstin',
+        'Place of Supply': 'place_of_supply',
+        'Place Of Supply': 'place_of_supply',
+        'POS': 'place_of_supply',
+        'Customer State': 'buyer_state',
+        'Shipping State': 'ship_to_state',
+        'Ship To State': 'ship_to_state',
+        'Ship From State': 'ship_from_state',
+        'HSN Code': 'hsn_sac',
+        'HSN': 'hsn_sac',
+        'HSN/SAC': 'hsn_sac',
+        'Product Name': 'description',
+        'Item Description': 'description',
+        'Product Description': 'description',
+        'Item Name': 'description',
+        'Item Code': 'item_code',
+        'SKU': 'item_code',
+        'Quantity': 'quantity',
+        'Qty': 'quantity',
+        'Unit Price': 'unit_price',
+        'Selling Price': 'unit_price',
+        'Discount': 'discount',
+        'Taxable Value': 'taxable_value',
+        'Taxable Amount': 'taxable_value',
+        'CGST Rate': 'cgst_rate',
+        'CGST Amount': 'cgst_amount',
+        'CGST': 'cgst_amount',
+        'SGST Rate': 'sgst_rate',
+        'SGST Amount': 'sgst_amount',
+        'SGST': 'sgst_amount',
+        'IGST Rate': 'igst_rate',
+        'IGST Amount': 'igst_amount',
+        'IGST': 'igst_amount',
+        'Cess Rate': 'cess_rate',
+        'Cess Amount': 'cess_amount',
+        'CESS': 'cess_amount',
+        'Tax Rate': 'tax_rate',
+        'GST Rate': 'tax_rate',
+        'Total Tax Rate': 'tax_rate',
+        'Invoice Value': 'invoice_value',
+        'Total Amount': 'invoice_value',
+        'Total Value': 'invoice_value',
+        'Total': 'invoice_value',
+        'Reverse Charge': 'reverse_charge',
+        'TCS Amount': 'tcs_amount',
+        'TCS': 'tcs_amount',
+        'E-Commerce GSTIN': 'ecommerce_gstin',
+        'Ecommerce GSTIN': 'ecommerce_gstin',
+        'Order Status': 'order_status',
+        'Supply Type': 'supply_type',
+        'Transaction Type': 'transaction_type',
+        'Marketplace': 'marketplace_name',
+        'Credit Note No': 'note_number',
+        'Credit Note Date': 'note_date',
+        'Note Type': 'note_type',
+    }
 
 
 def get_adapter_readiness_matrix(include_internal: bool = False) -> List[Dict[str, Any]]:

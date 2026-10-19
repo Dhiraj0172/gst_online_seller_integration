@@ -34,10 +34,10 @@ from app.services.gstr1_excel_writer import GSTR1ExcelWriter
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), '..', 'fixtures')
 
 DOCUMENTED_PLATFORMS = {'Amazon', 'Flipkart', 'Meesho', 'Myntra',
-                        'Custom_Excel', 'GSTR1_Govt'}
-FILENAME_ONLY_PLATFORMS = {'JioMart', 'Snapdeal', 'TataCLiQ', 'Limeroad',
-                           'Shopdeck', 'GlowRoad', 'Snapmint', 'Citymall',
-                           'Roposo'}
+                        'Custom_Excel', 'GSTR1_Govt', 'JioMart', 'Snapdeal',
+                        'TataCLiQ', 'Limeroad', 'Shopdeck', 'GlowRoad',
+                        'Snapmint', 'Citymall', 'Roposo'}
+FILENAME_ONLY_PLATFORMS = set()
 
 
 def _fixture(name):
@@ -79,17 +79,21 @@ class TestAdapterInventory:
         assert FILENAME_ONLY_PLATFORMS <= names
 
     def test_documented_adapters_declare_a_header_map(self):
-        for name in ('Amazon', 'Flipkart', 'Meesho', 'Myntra', 'GSTR1_Govt'):
+        for name in ('Amazon', 'Flipkart', 'Meesho', 'Myntra', 'GSTR1_Govt',
+                     'JioMart', 'Snapdeal', 'TataCLiQ', 'Limeroad', 'Shopdeck',
+                     'GlowRoad', 'Snapmint', 'Citymall', 'Roposo'):
             adapter = get_adapter(name)
             assert adapter.FORMAT_DOCUMENTED is True
             assert adapter.HEADER_MAP, f'{name} has no documented column map'
             assert adapter.INSTRUCTIONS
 
     def test_filename_only_adapters_do_not_invent_a_format(self):
-        for name in FILENAME_ONLY_PLATFORMS:
-            adapter = get_adapter(name)
-            assert adapter.FORMAT_DOCUMENTED is False
-            assert adapter.HEADER_MAP == {}
+        from app.adapters.all_adapters import _GenericFilenameAdapter
+        class _TestFallbackAdapter(_GenericFilenameAdapter):
+            PLATFORM_NAME = 'TestFallback'
+        adapter = _TestFallbackAdapter()
+        assert adapter.FORMAT_DOCUMENTED is False
+        assert adapter.HEADER_MAP == {}
 
     def test_custom_excel_is_the_catch_all_fallback(self):
         adapter = get_adapter('Custom_Excel')

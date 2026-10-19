@@ -106,6 +106,8 @@ def _get_active_transactions(profile_id: int, return_period: str) -> List[Transa
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
             Transaction.is_deleted == False,
+            Transaction.is_staged == False,
+            ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']),
             ImportHistory.return_period == str(return_period),
         )
         .order_by(Transaction.id.asc())
@@ -168,6 +170,7 @@ def check_import_counts(profile_id: int, return_period: str) -> CheckResult:
     imports = (
         tenant_query(ImportHistory, pid)
         .filter_by(return_period=rp)
+        .filter(ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL', 'SUPERSEDED']))
         .order_by(ImportHistory.created_at.asc())
         .all()
     )
@@ -815,6 +818,7 @@ def check_duplicates(profile_id: int, return_period: str = None) -> CheckResult:
     """Report active transactions that share the same business fingerprint within profile/period."""
     query = tenant_query(Transaction, int(profile_id)).filter(
         Transaction.is_deleted.is_(False),
+        Transaction.is_staged.is_(False),
         Transaction.row_fingerprint.isnot(None),
     )
     if return_period is not None:
@@ -843,6 +847,7 @@ def check_duplicates(profile_id: int, return_period: str = None) -> CheckResult:
 
     unf_query = tenant_query(Transaction, int(profile_id)).filter(
         Transaction.is_deleted.is_(False),
+        Transaction.is_staged.is_(False),
         Transaction.row_fingerprint.is_(None),
     )
     if return_period is not None:

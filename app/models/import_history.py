@@ -23,7 +23,29 @@ class ImportHistory(db.Model):
     warning_rows = db.Column(db.Integer, default=0)
     error_rows = db.Column(db.Integer, default=0)
     skipped_rows = db.Column(db.Integer, default=0)
-    processing_status = db.Column(db.String(20), index=True, nullable=False) # PENDING, VALIDATING, PARSING, NORMALIZING, CLASSIFYING, COMPLETED, FAILED
+    # Formalized Lifecycle Statuses
+    STATUS_PENDING = 'PENDING'
+    STATUS_PROCESSING = 'PROCESSING'
+    STATUS_STAGED = 'STAGED'
+    STATUS_COMPLETED = 'COMPLETED'
+    STATUS_PARTIAL = 'PARTIAL'
+    STATUS_FAILED = 'FAILED'
+    STATUS_SUPERSEDED = 'SUPERSEDED'
+    STATUS_CANCELLED = 'CANCELLED'
+
+    VALID_STATUSES = {
+        STATUS_PENDING,
+        STATUS_PROCESSING,
+        STATUS_STAGED,
+        STATUS_COMPLETED,
+        STATUS_PARTIAL,
+        STATUS_FAILED,
+        STATUS_SUPERSEDED,
+        STATUS_CANCELLED,
+    }
+    ACTIVE_STATUSES = {STATUS_COMPLETED, STATUS_PARTIAL}
+
+    processing_status = db.Column(db.String(20), index=True, nullable=False) # PROCESSING, STAGED, COMPLETED, PARTIAL, FAILED, SUPERSEDED, CANCELLED
     processing_started_at = db.Column(db.DateTime)
     processing_completed_at = db.Column(db.DateTime)
     processing_duration_ms = db.Column(db.Integer)

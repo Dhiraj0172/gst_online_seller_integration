@@ -5,7 +5,7 @@ import hashlib
 from decimal import Decimal
 from datetime import datetime
 from werkzeug.utils import secure_filename
-from flask import render_template, redirect, url_for, flash, request, session, current_app, send_file, jsonify
+from flask import render_template, redirect, url_for, flash, request, session, current_app, send_file, jsonify, abort
 from flask_login import login_required, current_user
 import openpyxl
 
@@ -127,6 +127,10 @@ def upload():
             allow_duplicate_file = str(request.form.get('allow_duplicate_file', '')).lower() in (
                 '1', 'true', 'yes', 'on'
             )
+            stage_mode = str(request.form.get('stage', '')).lower() in (
+                '1', 'true', 'yes', 'on'
+            ) or request.form.get('action') == 'preview' or 'preview' in request.form
+
             res = process_import(
                 file_path=filepath,
                 profile_id=profile.id,
@@ -137,6 +141,7 @@ def upload():
                 allow_duplicate_file=allow_duplicate_file,
                 classification_fn=classify_transaction,
                 import_history_id=import_rec.id,
+                stage=stage_mode,
             )
 
             if res.status == 'REJECTED_UNREADABLE':
@@ -159,6 +164,10 @@ def upload():
             if res.status == 'FAILED':
                 flash('An error occurred while processing the uploaded file. Please verify the file and try again.', 'danger')
                 return redirect(url_for('imports.import_page'))
+
+            if res.status == 'STAGED':
+                flash(f'File "{filename}" staged for preview. Review candidate transactions and confirm when ready.', 'info')
+                return redirect(url_for('imports.preview_view', id=res.import_history_id))
 
             summary = f'Processed {res.total_rows} rows: {res.success_rows} imported'
             if res.warning_rows:
@@ -201,15 +210,99 @@ def upload():
     flash('Invalid file format. Please upload an Excel (.xlsx/.xls) or CSV file.', 'danger')
     return redirect(url_for('imports.import_page'))
 
-@import_bp.route('/import/preview', methods=['POST', 'GET'])
+@import_bp.route('/import/<int:id>/preview', methods=['GET'])
+@import_bp.route('/import/preview', methods=['GET', 'POST'])
 @login_required
-def preview():
-    return redirect(url_for('imports.history'))
+def preview_view(id=None):
+    profile = get_active_profile()
+    if not profile:
+        flash('Please select an active profile first', 'warning')
+        return redirect(url_for('profile.list_profiles'))
 
+    target_id = id or request.args.get('id', type=int) or request.form.get('id', type=int)
+    if not target_id:
+        return redirect(url_for('imports.history'))
+
+    from app.services.import_service import preview_import
+    preview_data = preview_import(target_id, profile.id)
+    if not preview_data:
+        abort(404)
+
+    if request.is_json or request.args.get('format') == 'json':
+        return jsonify(preview_data)
+
+    return render_template('import_preview.html', preview=preview_data)
+
+
+@import_bp.route('/import/<int:id>/confirm', methods=['POST'])
 @import_bp.route('/import/confirm', methods=['POST'])
 @login_required
-def confirm():
-    return redirect(url_for('imports.history'))
+def confirm_view(id=None):
+    profile = get_active_profile()
+    if not profile:
+        if request.is_json:
+            return jsonify({"error": True, "message": "No active profile"}), 404
+        flash('Please select an active profile first', 'warning')
+        return redirect(url_for('profile.list_profiles'))
+
+    target_id = id or request.form.get('id', type=int)
+    if not target_id:
+        if request.is_json:
+            return jsonify({"error": True, "message": "Import ID required"}), 400
+        flash('Import ID required to confirm', 'danger')
+        return redirect(url_for('imports.history'))
+
+    from app.services.import_service import confirm_import
+    try:
+        res = confirm_import(target_id, profile.id, current_user.id)
+        if request.is_json:
+            return jsonify(res)
+        flash(res['message'], 'success')
+        return redirect(url_for('imports.history'))
+    except ValueError as e:
+        if request.is_json:
+            status_code = 403 if "frozen" in str(e).lower() else 400
+            return jsonify({"error": True, "message": str(e)}), status_code
+        flash(str(e), 'danger')
+        return redirect(url_for('imports.preview_view', id=target_id))
+
+
+@import_bp.route('/import/<int:id>/cancel', methods=['POST'])
+@import_bp.route('/import/cancel', methods=['POST'])
+@login_required
+def cancel_view(id=None):
+    profile = get_active_profile()
+    if not profile:
+        if request.is_json:
+            return jsonify({"error": True, "message": "No active profile"}), 404
+        flash('Please select an active profile first', 'warning')
+        return redirect(url_for('profile.list_profiles'))
+
+    target_id = id or request.form.get('id', type=int)
+    if not target_id:
+        if request.is_json:
+            return jsonify({"error": True, "message": "Import ID required"}), 400
+        flash('Import ID required to cancel', 'danger')
+        return redirect(url_for('imports.history'))
+
+    from app.services.import_service import cancel_import
+    try:
+        res = cancel_import(target_id, profile.id, current_user.id)
+        if request.is_json:
+            return jsonify(res)
+        flash(res['message'], 'info')
+        return redirect(url_for('imports.history'))
+    except ValueError as e:
+        if request.is_json:
+            return jsonify({"error": True, "message": str(e)}), 400
+        flash(str(e), 'danger')
+        return redirect(url_for('imports.preview_view', id=target_id))
+
+
+preview = preview_view
+confirm = confirm_view
+cancel = cancel_view
+
 
 @import_bp.route('/import/history')
 @login_required

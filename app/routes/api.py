@@ -65,6 +65,7 @@ def get_active_return_period(profile_id=None):
     if profile_id:
         latest_imp = (
             tenant_query(ImportHistory, profile_id)
+            .filter(ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']))
             .order_by(ImportHistory.created_at.desc())
             .first()
         )
@@ -109,9 +110,12 @@ def dashboard_stats():
 
     return_period = get_active_return_period(profile_id)
     tx_query = (
-        tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
+        tenant_query(Transaction, profile_id).filter_by(is_deleted=False, is_staged=False)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
-        .filter(ImportHistory.return_period == return_period)
+        .filter(
+            ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']),
+            ImportHistory.return_period == return_period
+        )
     )
 
     total_inv = tx_query.count()
@@ -213,9 +217,10 @@ def _get_section_transactions(tx_type):
     search = request.args.get('search', '').strip()
 
     query = (
-        tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
+        tenant_query(Transaction, profile_id).filter_by(is_deleted=False, is_staged=False)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
+            ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']),
             ImportHistory.return_period == return_period,
         )
     )
@@ -898,4 +903,50 @@ def api_get_generation(id):
         "created_at": gen.created_at.isoformat() if gen.created_at else None
     }
     return api_response(detail)
+
+
+@api_bp.route('/import/<int:id>/preview', methods=['GET'])
+@login_required
+def api_import_preview(id):
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="Active profile not found", status=404)
+
+    from app.services.import_service import preview_import
+    preview_data = preview_import(id, profile_id)
+    if not preview_data:
+        return api_response(error=True, message="Import record not found or access denied", status=404)
+
+    return api_response(preview_data)
+
+
+@api_bp.route('/import/<int:id>/confirm', methods=['POST'])
+@login_required
+def api_import_confirm(id):
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="Active profile not found", status=404)
+
+    from app.services.import_service import confirm_import
+    try:
+        res = confirm_import(id, profile_id, current_user.id)
+        return api_response(res, message=res.get('message', 'Import confirmed'))
+    except ValueError as e:
+        status_code = 403 if "frozen" in str(e).lower() else 400
+        return api_response(error=True, message=str(e), status=status_code)
+
+
+@api_bp.route('/import/<int:id>/cancel', methods=['POST'])
+@login_required
+def api_import_cancel(id):
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="Active profile not found", status=404)
+
+    from app.services.import_service import cancel_import
+    try:
+        res = cancel_import(id, profile_id, current_user.id)
+        return api_response(res, message=res.get('message', 'Import cancelled'))
+    except ValueError as e:
+        return api_response(error=True, message=str(e), status=400)
 

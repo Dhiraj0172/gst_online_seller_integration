@@ -26,7 +26,8 @@ def get_ecom_supplies(profile_id: int, return_period: str, include_undated: bool
 
     query = tenant_query(Transaction, profile_id).filter(
         Transaction.ecommerce_gstin.isnot(None),
-        Transaction.is_deleted == False
+        Transaction.is_deleted == False,
+        Transaction.is_staged == False
     )
 
     if include_undated:

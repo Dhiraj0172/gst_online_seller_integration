@@ -1,0 +1,291 @@
+{% extends 'base.html' %}
+{% block title %}Import Preview - {{ preview.file_name }} - GST Online Seller{% endblock %}
+{% block content %}
+<div class="container-fluid px-0">
+    <!-- Header Banner -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="mb-1"><i class="fas fa-file-invoice text-primary me-2"></i>Import Preview</h2>
+            <div class="text-muted small">
+                <strong>File:</strong> {{ preview.file_name }} &bull;
+                <strong>Platform:</strong> <span class="badge bg-secondary">{{ preview.platform_name }}</span> &bull;
+                <strong>Period:</strong> <span class="badge bg-info text-dark">{{ preview.return_period }}</span> &bull;
+                <strong>Status:</strong>
+                {% if preview.processing_status == 'STAGED' %}
+                <span class="badge bg-primary fs-6">{{ preview.processing_status }}</span>
+                {% elif preview.processing_status in ('COMPLETED', 'PARTIAL') %}
+                <span class="badge bg-success fs-6">{{ preview.processing_status }}</span>
+                {% elif preview.processing_status == 'CANCELLED' %}
+                <span class="badge bg-warning text-dark fs-6">{{ preview.processing_status }}</span>
+                {% else %}
+                <span class="badge bg-danger fs-6">{{ preview.processing_status }}</span>
+                {% endif %}
+            </div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <a href="{{ url_for('imports.history') }}" class="btn btn-outline-secondary">
+                <i class="fas fa-arrow-left me-1"></i>Import History
+            </a>
+            {% if preview.processing_status == 'STAGED' %}
+            <form method="POST" action="{{ url_for('imports.confirm_view', id=preview.import_id) }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-success" {% if preview.is_frozen %}disabled title="Period frozen by GSTR-1"{% endif %}>
+                    <i class="fas fa-check-circle me-1"></i>Confirm Import
+                </button>
+            </form>
+            <form method="POST" action="{{ url_for('imports.cancel_view', id=preview.import_id) }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-outline-danger" onclick="return confirm('Are you sure you want to discard this staged import?');">
+                    <i class="fas fa-times-circle me-1"></i>Cancel Import
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Frozen Period Alert -->
+    {% if preview.is_frozen %}
+    <div class="alert alert-danger d-flex align-items-center shadow-sm" role="alert">
+        <i class="fas fa-lock fa-2x me-3"></i>
+        <div>
+            <h5 class="alert-heading mb-1">Return Period Frozen</h5>
+            <span>A finalized GSTR-1 generation exists for return period <strong>{{ preview.return_period }}</strong>. This staged import cannot be confirmed into a finalized period.</span>
+        </div>
+    </div>
+    {% elif preview.processing_status == 'STAGED' %}
+    <div class="alert alert-info d-flex align-items-center shadow-sm" role="alert">
+        <i class="fas fa-info-circle fa-2x me-3"></i>
+        <div>
+            <h5 class="alert-heading mb-1">Staged Candidate Data</h5>
+            <span>This import is currently staged for review. Candidate transactions are strictly isolated and will <strong>not</strong> be included in GSTR-1, reports, or calculations until confirmed.</span>
+        </div>
+    </div>
+    {% elif preview.processing_status == 'CANCELLED' %}
+    <div class="alert alert-warning d-flex align-items-center shadow-sm" role="alert">
+        <i class="fas fa-ban fa-2x me-3"></i>
+        <div>
+            <h5 class="alert-heading mb-1">Import Cancelled</h5>
+            <span>This staged import was cancelled. Staged candidate transactions have been soft-deleted and the raw audit evidence remains securely preserved.</span>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Metric Counts Cards -->
+    <div class="row g-3 mb-4">
+        <div class="col-md-2 col-sm-4">
+            <div class="card shadow-sm border-0 text-center bg-light h-100">
+                <div class="card-body py-3">
+                    <div class="text-muted small text-uppercase fw-bold">Total Rows</div>
+                    <h3 class="mb-0 text-dark">{{ preview.counts.total_rows }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2 col-sm-4">
+            <div class="card shadow-sm border-0 text-center border-start border-success border-4 h-100">
+                <div class="card-body py-3">
+                    <div class="text-muted small text-uppercase fw-bold">Accepted</div>
+                    <h3 class="mb-0 text-success">{{ preview.counts.accepted_rows }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2 col-sm-4">
+            <div class="card shadow-sm border-0 text-center border-start border-warning border-4 h-100">
+                <div class="card-body py-3">
+                    <div class="text-muted small text-uppercase fw-bold">Warnings</div>
+                    <h3 class="mb-0 text-warning">{{ preview.counts.warning_rows }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3 col-sm-6">
+            <div class="card shadow-sm border-0 text-center border-start border-danger border-4 h-100">
+                <div class="card-body py-3">
+                    <div class="text-muted small text-uppercase fw-bold">Rejected</div>
+                    <h3 class="mb-0 text-danger">{{ preview.counts.rejected_rows }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3 col-sm-6">
+            <div class="card shadow-sm border-0 text-center border-start border-secondary border-4 h-100">
+                <div class="card-body py-3">
+                    <div class="text-muted small text-uppercase fw-bold">Duplicates Skipped</div>
+                    <h3 class="mb-0 text-secondary">{{ preview.counts.duplicate_rows }}</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Financial Tax Summary Cards -->
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-header bg-white py-3">
+            <h5 class="mb-0"><i class="fas fa-calculator text-primary me-2"></i>Tax & Value Totals (Candidate Records)</h5>
+        </div>
+        <div class="card-body">
+            <div class="row g-3 text-center">
+                <div class="col-md-3 col-sm-6">
+                    <div class="p-2 border rounded bg-light">
+                        <small class="text-muted d-block">Taxable Value</small>
+                        <span class="fs-5 fw-bold text-dark">₹{{ "%.2f"|format(preview.tax_summary.taxable_value) }}</span>
+                    </div>
+                </div>
+                <div class="col-md-2 col-sm-4">
+                    <div class="p-2 border rounded bg-light">
+                        <small class="text-muted d-block">CGST</small>
+                        <span class="fs-5 fw-bold text-primary">₹{{ "%.2f"|format(preview.tax_summary.cgst_amount) }}</span>
+                    </div>
+                </div>
+                <div class="col-md-2 col-sm-4">
+                    <div class="p-2 border rounded bg-light">
+                        <small class="text-muted d-block">SGST</small>
+                        <span class="fs-5 fw-bold text-primary">₹{{ "%.2f"|format(preview.tax_summary.sgst_amount) }}</span>
+                    </div>
+                </div>
+                <div class="col-md-2 col-sm-4">
+                    <div class="p-2 border rounded bg-light">
+                        <small class="text-muted d-block">IGST</small>
+                        <span class="fs-5 fw-bold text-primary">₹{{ "%.2f"|format(preview.tax_summary.igst_amount) }}</span>
+                    </div>
+                </div>
+                <div class="col-md-3 col-sm-6">
+                    <div class="p-2 border rounded bg-light">
+                        <small class="text-muted d-block">Total Tax</small>
+                        <span class="fs-5 fw-bold text-success">₹{{ "%.2f"|format(preview.tax_summary.total_tax) }}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-3 pt-2 border-top d-flex justify-content-between align-items-center">
+                <div class="small text-muted">
+                    <strong>Section Breakdown:</strong>
+                    B2B: {{ preview.section_breakdown.b2b }} &bull;
+                    B2C: {{ preview.section_breakdown.b2c }} &bull;
+                    CDNR: {{ preview.section_breakdown.cdnr }} &bull;
+                    NIL: {{ preview.section_breakdown.nil }} &bull;
+                    HSN: {{ preview.section_breakdown.hsn }}
+                </div>
+                <div class="fw-bold">
+                    Invoice Value: ₹{{ "%.2f"|format(preview.tax_summary.invoice_value) }}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Candidate Row Preview Table -->
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="fas fa-list text-primary me-2"></i>Candidate Transactions Preview (First 50 Rows)</h5>
+            <span class="badge bg-secondary">{{ preview.rows_preview|length }} of {{ preview.counts.accepted_rows }} displayed</span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-striped align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>#</th>
+                            <th>Invoice #</th>
+                            <th>Date</th>
+                            <th>Customer GSTIN</th>
+                            <th>POS</th>
+                            <th class="text-end">Taxable Val</th>
+                            <th class="text-end">Tax Rate</th>
+                            <th class="text-end">Total Tax</th>
+                            <th class="text-end">Invoice Val</th>
+                            <th>Supply Type</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if preview.rows_preview %}
+                            {% for r in preview.rows_preview %}
+                            <tr>
+                                <td><small class="text-muted">{{ loop.index }}</small></td>
+                                <td><strong>{{ r.invoice_number or 'n/a' }}</strong></td>
+                                <td>{{ r.invoice_date or '' }}</td>
+                                <td><code>{{ r.customer_gstin or 'Unregistered' }}</code></td>
+                                <td>{{ r.place_of_supply }}</td>
+                                <td class="text-end">₹{{ "%.2f"|format(r.taxable_value) }}</td>
+                                <td class="text-end">{{ "%.1f"|format(r.tax_rate) }}%</td>
+                                <td class="text-end">₹{{ "%.2f"|format(r.total_tax) }}</td>
+                                <td class="text-end fw-bold">₹{{ "%.2f"|format(r.invoice_value) }}</td>
+                                <td><span class="badge bg-light text-dark border">{{ r.supply_type }}</span></td>
+                                <td><span class="badge bg-success-subtle text-success border border-success">{{ r.validation_status }}</span></td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="11" class="text-center py-4 text-muted">No candidate transaction rows to display.</td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Errors & Duplicates Accordion (if any) -->
+    {% if preview.errors or preview.duplicates or preview.warnings %}
+    <div class="accordion mb-4 shadow-sm" id="issuesAccordion">
+        {% if preview.errors %}
+        <div class="accordion-item border-danger">
+            <h2 class="accordion-header" id="headingErrors">
+                <button class="accordion-button text-danger fw-bold collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseErrors">
+                    <i class="fas fa-exclamation-circle me-2"></i>Rejections & Parsing Errors ({{ preview.errors|length }})
+                </button>
+            </h2>
+            <div id="collapseErrors" class="accordion-collapse collapse" data-bs-parent="#issuesAccordion">
+                <div class="accordion-body">
+                    <ul class="list-group list-group-flush">
+                        {% for err in preview.errors %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <span><code>{{ err.code }}</code> {% if err.row %}Row {{ err.row }}: {% endif %}{{ err.message }}</span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if preview.duplicates %}
+        <div class="accordion-item border-secondary">
+            <h2 class="accordion-header" id="headingDuplicates">
+                <button class="accordion-button text-secondary fw-bold collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseDuplicates">
+                    <i class="fas fa-copy me-2"></i>Skipped Duplicates ({{ preview.duplicates|length }})
+                </button>
+            </h2>
+            <div id="collapseDuplicates" class="accordion-collapse collapse" data-bs-parent="#issuesAccordion">
+                <div class="accordion-body">
+                    <ul class="list-group list-group-flush">
+                        {% for dup in preview.duplicates %}
+                        <li class="list-group-item">
+                            <code>{{ dup.code }}</code> {% if dup.row %}Row {{ dup.row }}: {% endif %}{{ dup.message }}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if preview.warnings %}
+        <div class="accordion-item border-warning">
+            <h2 class="accordion-header" id="headingWarnings">
+                <button class="accordion-button text-warning fw-bold collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseWarnings">
+                    <i class="fas fa-exclamation-triangle me-2"></i>Row Warnings ({{ preview.warnings|length }})
+                </button>
+            </h2>
+            <div id="collapseWarnings" class="accordion-collapse collapse" data-bs-parent="#issuesAccordion">
+                <div class="accordion-body">
+                    <ul class="list-group list-group-flush">
+                        {% for warn in preview.warnings %}
+                        <li class="list-group-item">
+                            <code>{{ warn.code }}</code> {% if warn.row %}Row {{ warn.row }}: {% endif %}{{ warn.message }}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

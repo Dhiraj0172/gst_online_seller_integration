@@ -60,6 +60,10 @@ __all__ = [
     'read_chunks',
     'process_import',
     'reprocess_import',
+    'check_generation_freeze',
+    'preview_import',
+    'confirm_import',
+    'cancel_import',
     '_create_transaction_from_normalized',
     'ImportResult',
     'ImportRow',
@@ -193,6 +197,7 @@ def process_import(
     classification_fn: Optional[Callable] = None,
     import_history_id: Optional[int] = None,
     _internal_commit: bool = True,
+    stage: bool = False,
 ) -> ImportProcessingResult:
     """Execute the canonical import pipeline for any marketplace report.
 
@@ -536,6 +541,7 @@ def process_import(
                         import_history_id=import_history.id,
                         profile_id=profile_id,
                         raw_import=raw_imp,
+                        is_staged=stage,
                         source_platform=platform_name,
                         source_row_id=str(
                             norm.get('order_item_id')
@@ -617,9 +623,12 @@ def process_import(
         import_history.error_rows = error_rows
         import_history.warning_rows = warning_rows
         import_history.skipped_rows = skipped_rows
-        import_history.processing_status = 'COMPLETED' if not (
-            error_rows or warning_rows or skipped_rows
-        ) else 'PARTIAL'
+        if stage:
+            import_history.processing_status = 'STAGED'
+        else:
+            import_history.processing_status = 'COMPLETED' if not (
+                error_rows or warning_rows or skipped_rows
+            ) else 'PARTIAL'
 
         error_summary, warning_summary = duplicate_envelope(
             rejections, duplicates, warning_report, counts
@@ -628,6 +637,16 @@ def process_import(
         import_history.warning_summary = warning_summary if (duplicates or warning_report) else None
         import_history.processing_completed_at = datetime.utcnow()
         import_history.processing_duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+
+        if stage:
+            from app.services.audit_service import log_import_audit
+            log_import_audit(
+                user_id=user_id,
+                import_history_id=import_history.id,
+                action='STAGE',
+                reason=f"File staged for preview: {import_history.file_name}",
+                commit=False
+            )
 
         db.session.commit() if _internal_commit else db.session.flush()
 
@@ -834,11 +853,7 @@ def reprocess_import(
         return result
 
     # 4. Check generation freeze BEFORE mutating
-    freeze = tenant_query(GSTR1Generation, profile_id).filter_by(
-        return_period=original_import.return_period,
-        generation_status='COMPLETED',
-        validation_passed=True
-    ).first()
+    freeze = check_generation_freeze(profile_id, original_import.return_period)
     if freeze:
         result = ImportProcessingResult()
         result.status = 'FAILED'
@@ -912,4 +927,257 @@ def reprocess_import(
     except Exception:
         db.session.rollback()
         raise
+
+
+def check_generation_freeze(profile_id: int, return_period: str) -> Optional[Any]:
+    """Return active GSTR-1 freeze lock if finalized generation exists for period."""
+    from app.models.gstr1_generation import GSTR1Generation
+    return tenant_query(GSTR1Generation, profile_id).filter_by(
+        return_period=return_period,
+        generation_status='COMPLETED',
+        validation_passed=True
+    ).first()
+
+
+def preview_import(import_id: int, profile_id: int) -> Optional[Dict[str, Any]]:
+    """Generate a deterministic preview of a staged or completed import scoped to tenant."""
+    from sqlalchemy import func
+
+    import_rec = tenant_query(ImportHistory, profile_id).filter_by(id=import_id).first()
+    if not import_rec:
+        return None
+
+    # Tax summary aggregation across candidate transactions
+    tx_query = tenant_query(Transaction, profile_id).filter_by(
+        import_history_id=import_id,
+        is_deleted=False
+    )
+
+    tax_summary_tuple = tx_query.with_entities(
+        func.coalesce(func.sum(Transaction.taxable_value), 0),
+        func.coalesce(func.sum(Transaction.cgst_amount), 0),
+        func.coalesce(func.sum(Transaction.sgst_amount), 0),
+        func.coalesce(func.sum(Transaction.igst_amount), 0),
+        func.coalesce(func.sum(Transaction.cess_amount), 0),
+        func.coalesce(func.sum(Transaction.total_tax), 0),
+        func.coalesce(func.sum(Transaction.invoice_value), 0),
+    ).first()
+
+    # Section breakdown
+    breakdown = {
+        'b2b': tx_query.filter(Transaction.supply_type.in_(['B2B', 'B2BA'])).count(),
+        'b2c': tx_query.filter(Transaction.supply_type.in_(['B2CS', 'B2CSA', 'B2CL', 'B2CLA'])).count(),
+        'cdnr': tx_query.filter(Transaction.supply_type.in_(['CDNR', 'CDNRA', 'CDNUR', 'CDNURA'])).count(),
+        'nil': tx_query.filter(Transaction.supply_type.in_(['NIL', 'EXEMPT', 'NONGST'])).count(),
+        'hsn': tx_query.filter(Transaction.supply_type.in_(['HSN', 'HSNB2C'])).count(),
+    }
+
+    # Deterministic sample rows (first 50)
+    sample_txs = tx_query.order_by(Transaction.id.asc()).limit(50).all()
+    rows_preview = [{
+        "id": t.id,
+        "invoice_number": t.invoice_number,
+        "invoice_date": t.invoice_date.strftime('%Y-%m-%d') if t.invoice_date else None,
+        "customer_gstin": t.customer_gstin or '',
+        "customer_name": t.customer_name or '',
+        "place_of_supply": t.place_of_supply or '',
+        "taxable_value": float(t.taxable_value or 0),
+        "cgst_amount": float(t.cgst_amount or 0),
+        "sgst_amount": float(t.sgst_amount or 0),
+        "igst_amount": float(t.igst_amount or 0),
+        "cess_amount": float(t.cess_amount or 0),
+        "total_tax": float(t.total_tax or 0),
+        "invoice_value": float(t.invoice_value or 0),
+        "tax_rate": float(t.tax_rate or 0),
+        "supply_type": t.supply_type or '',
+        "validation_status": t.validation_status or 'VALID'
+    } for t in sample_txs]
+
+    # Parse error and warning envelopes
+    try:
+        errors_json = json.loads(import_rec.error_summary) if import_rec.error_summary else {}
+    except Exception:
+        errors_json = {}
+    try:
+        warnings_json = json.loads(import_rec.warning_summary) if import_rec.warning_summary else {}
+    except Exception:
+        warnings_json = {}
+
+    freeze = check_generation_freeze(profile_id, import_rec.return_period)
+
+    return {
+        "import_id": import_rec.id,
+        "profile_id": import_rec.profile_id,
+        "file_name": import_rec.file_name,
+        "platform_name": import_rec.platform_name,
+        "return_period": import_rec.return_period,
+        "financial_year": import_rec.financial_year,
+        "processing_status": import_rec.processing_status,
+        "created_at": import_rec.created_at.isoformat() if import_rec.created_at else None,
+        "counts": {
+            "total_rows": import_rec.total_rows or 0,
+            "accepted_rows": import_rec.success_rows or 0,
+            "warning_rows": import_rec.warning_rows or 0,
+            "rejected_rows": import_rec.error_rows or 0,
+            "duplicate_rows": import_rec.skipped_rows or 0,
+        },
+        "tax_summary": {
+            "taxable_value": float(tax_summary_tuple[0]) if tax_summary_tuple else 0.0,
+            "cgst_amount": float(tax_summary_tuple[1]) if tax_summary_tuple else 0.0,
+            "sgst_amount": float(tax_summary_tuple[2]) if tax_summary_tuple else 0.0,
+            "igst_amount": float(tax_summary_tuple[3]) if tax_summary_tuple else 0.0,
+            "cess_amount": float(tax_summary_tuple[4]) if tax_summary_tuple else 0.0,
+            "total_tax": float(tax_summary_tuple[5]) if tax_summary_tuple else 0.0,
+            "invoice_value": float(tax_summary_tuple[6]) if tax_summary_tuple else 0.0,
+        },
+        "section_breakdown": breakdown,
+        "rows_preview": rows_preview,
+        "errors": errors_json.get('errors', []) if isinstance(errors_json, dict) else [],
+        "duplicates": warnings_json.get('duplicates', []) if isinstance(warnings_json, dict) else [],
+        "warnings": warnings_json.get('warnings', []) if isinstance(warnings_json, dict) else [],
+        "is_frozen": freeze is not None,
+        "can_confirm": import_rec.processing_status == 'STAGED' and freeze is None
+    }
+
+
+def confirm_import(import_id: int, profile_id: int, user_id: Optional[int] = None) -> Dict[str, Any]:
+    """Atomically confirm a STAGED import with freeze check and idempotency."""
+    from app.services.audit_service import log_import_audit
+
+    import_rec = tenant_query(ImportHistory, profile_id).filter_by(id=import_id).first()
+    if not import_rec:
+        raise ValueError(f"Import #{import_id} not found or access denied.")
+
+    # Idempotent repeat calls: already completed/partial
+    if import_rec.processing_status in ('COMPLETED', 'PARTIAL'):
+        return {
+            "success": True,
+            "status": import_rec.processing_status,
+            "message": f"Import #{import_id} is already confirmed.",
+            "already_confirmed": True,
+            "import_id": import_rec.id,
+            "return_period": import_rec.return_period
+        }
+
+    # Fails closed on invalid initial states
+    if import_rec.processing_status in ('CANCELLED', 'FAILED', 'SUPERSEDED'):
+        raise ValueError(f"Cannot confirm import #{import_id} with status '{import_rec.processing_status}'.")
+
+    if import_rec.processing_status != 'STAGED':
+        raise ValueError(f"Cannot confirm import #{import_id}: unexpected status '{import_rec.processing_status}'.")
+
+    # Generation Freeze Check BEFORE mutation
+    freeze = check_generation_freeze(profile_id, import_rec.return_period)
+    if freeze:
+        raise ValueError(
+            f"Cannot confirm import: Return period {import_rec.return_period} is frozen "
+            f"by finalized GSTR-1 generation #{freeze.id}."
+        )
+
+    # Concurrency guard: atomic update on status
+    final_status = 'PARTIAL' if (import_rec.error_rows or import_rec.warning_rows or import_rec.skipped_rows) else 'COMPLETED'
+    updated = tenant_query(ImportHistory, profile_id).filter(
+        ImportHistory.id == import_id,
+        ImportHistory.processing_status == 'STAGED'
+    ).update({
+        'processing_status': final_status,
+        'processing_completed_at': datetime.utcnow()
+    }, synchronize_session=False)
+
+    if updated == 0:
+        # Concurrent request already handled it; re-fetch and return idempotent response
+        refreshed = tenant_query(ImportHistory, profile_id).filter_by(id=import_id).first()
+        if refreshed and refreshed.processing_status in ('COMPLETED', 'PARTIAL'):
+            return {
+                "success": True,
+                "status": refreshed.processing_status,
+                "message": f"Import #{import_id} is already confirmed.",
+                "already_confirmed": True,
+                "import_id": refreshed.id,
+                "return_period": refreshed.return_period
+            }
+        raise ValueError(f"Concurrent update conflict on import #{import_id}.")
+
+    # Atomic promotion of candidate transactions
+    tenant_query(Transaction, profile_id).filter_by(
+        import_history_id=import_rec.id,
+        is_staged=True
+    ).update({'is_staged': False}, synchronize_session=False)
+
+    import_rec.processing_status = final_status
+
+    # Log CONFIRM audit entry
+    log_import_audit(
+        user_id=user_id or import_rec.user_id,
+        import_history_id=import_rec.id,
+        action='CONFIRM',
+        reason=f"Staged import #{import_id} confirmed ({final_status})",
+        commit=False
+    )
+
+    db.session.commit()
+
+    return {
+        "success": True,
+        "status": final_status,
+        "message": f"Import #{import_id} successfully confirmed.",
+        "import_id": import_rec.id,
+        "return_period": import_rec.return_period,
+        "total_rows": import_rec.total_rows,
+        "success_rows": import_rec.success_rows
+    }
+
+
+def cancel_import(import_id: int, profile_id: int, user_id: Optional[int] = None) -> Dict[str, Any]:
+    """Cancel a STAGED import, soft-deleting candidate transactions while preserving RawImport."""
+    from app.services.audit_service import log_import_audit
+
+    import_rec = tenant_query(ImportHistory, profile_id).filter_by(id=import_id).first()
+    if not import_rec:
+        raise ValueError(f"Import #{import_id} not found or access denied.")
+
+    # Idempotent repeat calls
+    if import_rec.processing_status == 'CANCELLED':
+        return {
+            "success": True,
+            "status": "CANCELLED",
+            "message": f"Import #{import_id} is already cancelled.",
+            "already_cancelled": True,
+            "import_id": import_rec.id
+        }
+
+    if import_rec.processing_status != 'STAGED':
+        raise ValueError(f"Cannot cancel import #{import_id}: Only STAGED imports can be cancelled (current status: {import_rec.processing_status}).")
+
+    # Transition state to CANCELLED
+    import_rec.processing_status = 'CANCELLED'
+    import_rec.processing_completed_at = datetime.utcnow()
+
+    # Soft-delete staged Transaction rows (RawImport is untouched as immutable evidence)
+    tenant_query(Transaction, profile_id).filter_by(
+        import_history_id=import_rec.id,
+        is_deleted=False
+    ).update({
+        'is_deleted': True,
+        'deleted_at': datetime.utcnow(),
+        'deleted_by': user_id or import_rec.user_id
+    }, synchronize_session=False)
+
+    # Log CANCEL audit entry
+    log_import_audit(
+        user_id=user_id or import_rec.user_id,
+        import_history_id=import_rec.id,
+        action='CANCEL',
+        reason=f"Staged import #{import_id} cancelled",
+        commit=False
+    )
+
+    db.session.commit()
+
+    return {
+        "success": True,
+        "status": "CANCELLED",
+        "message": f"Import #{import_id} cancelled successfully.",
+        "import_id": import_rec.id
+    }
 

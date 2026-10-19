@@ -76,6 +76,7 @@ def get_active_return_period(profile_id=None):
     if profile_id:
         latest_imp = (
             tenant_query(ImportHistory, profile_id)
+            .filter(ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']))
             .order_by(ImportHistory.created_at.desc())
             .first()
         )
@@ -97,6 +98,7 @@ def index():
     if profile_id:
         rows = (
             tenant_query(ImportHistory, profile_id)
+            .filter(ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']))
             .with_entities(ImportHistory.return_period)
             .distinct()
             .order_by(ImportHistory.return_period.desc())
@@ -141,9 +143,10 @@ def get_paginated_transactions(tx_type):
     search = request.args.get('search', '').strip()
 
     query = (
-        tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
+        tenant_query(Transaction, profile_id).filter_by(is_deleted=False, is_staged=False)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
+            ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']),
             ImportHistory.return_period == return_period,
         )
     )

@@ -166,6 +166,7 @@ def find_existing_transactions(profile_id: int,
             tenant_query(Transaction, profile_id)
             .filter(
                 Transaction.is_deleted.is_(False),
+                Transaction.is_staged.is_(False),
                 Transaction.row_fingerprint.in_(batch),
             )
             .order_by(Transaction.id.asc())

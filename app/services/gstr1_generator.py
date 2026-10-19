@@ -56,11 +56,12 @@ def load_transactions(profile_id: str, return_period: str) -> Dict[str, Any]:
     if not profile:
         return _empty_gstr1_structure(return_period)
 
-    # Query transactions strictly for this profile and exact return period
     transactions = tenant_query(Transaction, int(profile_id)).join(
         ImportHistory, Transaction.import_history_id == ImportHistory.id
     ).filter(
         Transaction.is_deleted == False,
+        Transaction.is_staged == False,
+        ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']),
         ImportHistory.return_period == return_period
     ).all()
 

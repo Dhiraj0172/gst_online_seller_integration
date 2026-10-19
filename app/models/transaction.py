@@ -76,6 +76,7 @@ class Transaction(db.Model):
     amendment_flag = db.Column(db.Boolean, default=False)
 
     is_deleted = db.Column(db.Boolean, default=False)
+    is_staged = db.Column(db.Boolean, default=False, nullable=False, index=True)
     deleted_at = db.Column(db.DateTime)
     deleted_by = db.Column(db.Integer, db.ForeignKey('users.id'))
 

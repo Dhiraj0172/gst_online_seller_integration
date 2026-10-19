@@ -28,6 +28,8 @@
                             <td>
                                 {% if item.processing_status == 'COMPLETED' %}
                                 <span class="badge bg-success">{{ item.processing_status }}</span>
+                                {% elif item.processing_status == 'STAGED' %}
+                                <span class="badge bg-primary">{{ item.processing_status }}</span>
                                 {% elif item.processing_status == 'PARTIAL' %}
                                 <span class="badge bg-warning text-dark">{{ item.processing_status }}</span>
                                 {% elif item.processing_status == 'FAILED' %}
@@ -77,7 +79,12 @@
                                     {% endif %}
                                 {% endif %}
                             </td>
-                            <td><a href="{{ url_for('imports.detail', id=item.id) }}" class="btn btn-sm btn-outline-info">Detail</a></td>
+                            <td>
+                                {% if item.processing_status == 'STAGED' %}
+                                <a href="{{ url_for('imports.preview_view', id=item.id) }}" class="btn btn-sm btn-primary me-1">Preview & Confirm</a>
+                                {% endif %}
+                                <a href="{{ url_for('imports.detail', id=item.id) }}" class="btn btn-sm btn-outline-info">Detail</a>
+                            </td>
                         </tr>
                         {% endfor %}
                     {% else %}

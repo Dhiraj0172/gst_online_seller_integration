@@ -60,7 +60,11 @@ def import_page():
     if not profile:
         flash('Please create a GST profile first', 'warning')
         return redirect(url_for('profile.list_profiles'))
-    platforms = list_platforms()
+    from app.adapters.all_adapters import get_adapter_readiness_matrix
+    platforms = get_adapter_readiness_matrix(include_internal=False)
+    for p in platforms:
+        if 'supported_files' not in p:
+            p['supported_files'] = p.get('supported_file_types', ['.xlsx', '.csv'])
     return render_template('import.html', platforms=platforms)
 
 @import_bp.route('/import/upload', methods=['POST'])
@@ -144,7 +148,11 @@ def upload():
                 stage=stage_mode,
             )
 
+            is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.is_json or request.args.get('format') == 'json'
+
             if res.status == 'REJECTED_UNREADABLE':
+                if is_ajax:
+                    return jsonify({'success': False, 'status': res.status, 'errors': res.errors, 'message': f'Import rejected: {res.errors[0] if res.errors else "File unreadable"}'}), 400
                 for err in res.errors:
                     flash(f'Import rejected: {err}', 'danger')
                 return redirect(url_for('imports.history'))
@@ -152,21 +160,36 @@ def upload():
             if res.status == 'REJECTED_INVALID':
                 adapter = get_adapter(platform_name) or BaseGenericAdapter()
                 plat_name = getattr(adapter, 'PLATFORM_NAME', platform_name) or platform_name
+                if is_ajax:
+                    return jsonify({'success': False, 'status': res.status, 'errors': res.validation_errors, 'message': f'Import rejected ({plat_name})'}), 400
                 for message in res.validation_errors[:3]:
                     flash(f'Import rejected ({plat_name}): {message}', 'danger')
                 return redirect(url_for('imports.history'))
 
             if res.status == 'REJECTED_DUPLICATE_FILE':
                 msg = res.errors[0] if res.errors else 'The exact same file has already been imported for this profile'
+                if is_ajax:
+                    return jsonify({'success': False, 'status': res.status, 'errors': res.errors, 'message': msg}), 400
                 flash(f'Import rejected: {msg}', 'danger')
                 return redirect(url_for('imports.history'))
 
             if res.status == 'FAILED':
+                if is_ajax:
+                    return jsonify({'success': False, 'status': res.status, 'message': 'An error occurred while processing the uploaded file.'}), 500
                 flash('An error occurred while processing the uploaded file. Please verify the file and try again.', 'danger')
                 return redirect(url_for('imports.import_page'))
 
             if res.status == 'STAGED':
-                flash(f'File "{filename}" staged for preview. Review candidate transactions and confirm when ready.', 'info')
+                msg = f'File "{filename}" staged for preview. Review candidate transactions and confirm when ready.'
+                if is_ajax:
+                    return jsonify({
+                        'success': True,
+                        'import_id': res.import_history_id or import_rec.id,
+                        'status': 'STAGED',
+                        'message': msg,
+                        'redirect_url': url_for('imports.preview_view', id=res.import_history_id or import_rec.id)
+                    })
+                flash(msg, 'info')
                 return redirect(url_for('imports.preview_view', id=res.import_history_id))
 
             summary = f'Processed {res.total_rows} rows: {res.success_rows} imported'
@@ -176,6 +199,14 @@ def upload():
                 summary += f', {res.error_rows} rejected'
             if res.skipped_rows:
                 summary += f', {res.skipped_rows} duplicates skipped'
+            if is_ajax:
+                return jsonify({
+                    'success': True,
+                    'import_id': res.import_history_id or import_rec.id,
+                    'status': res.status,
+                    'message': f'File "{filename}" imported: {summary}.',
+                    'redirect_url': url_for('imports.history')
+                })
             flash(f'File "{filename}" imported: {summary}.', 'success')
             return redirect(url_for('imports.history'))
             
@@ -204,6 +235,8 @@ def upload():
                     current_app.logger.error(
                         f"Failed to update import record {import_rec_id} to FAILED: {commit_exc}"
                     )
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.is_json:
+                return jsonify({'success': False, 'status': 'FAILED', 'message': str(e)}), 500
             flash('An error occurred while processing the uploaded file. Please verify the file and try again.', 'danger')
             return redirect(url_for('imports.import_page'))
             
@@ -380,6 +413,34 @@ def reprocess(id):
         log_import_audit(current_user.id, id, action='REPROCESS', reason=f"FAILED: {str(e)}", commit=True)
 
     return redirect(url_for('imports.history'))
+ 
+@import_bp.route('/import/<int:id>/retry', methods=['POST'])
+@login_required
+def retry_view(id):
+    profile = get_active_profile()
+    if not profile:
+        if request.is_json or request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({'error': True, 'message': 'No active profile'}), 404
+        flash('Please select an active profile first', 'warning')
+        return redirect(url_for('profile.list_profiles'))
+
+    from app.services.job_service import retry_import_job
+    try:
+        stage = str(request.form.get('stage', '')).lower() in ('1', 'true', 'yes', 'on')
+        res = retry_import_job(import_id=id, profile_id=profile.id, user_id=current_user.id, stage=stage)
+        msg = res.get('message', f'Import #{id} retried successfully.')
+        if request.is_json or request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({'success': True, 'message': msg, 'data': res})
+        flash(msg, 'success')
+        return redirect(url_for('imports.history'))
+    except Exception as exc:
+        err_msg = str(exc)
+        if request.is_json or request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({'error': True, 'message': err_msg}), 400
+        flash(f"Retry failed: {err_msg}", 'danger')
+        return redirect(url_for('imports.history'))
+
+retry = retry_view
 
 @import_bp.route('/import/<int:id>/download-original')
 @login_required

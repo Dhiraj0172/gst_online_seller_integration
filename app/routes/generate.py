@@ -7,6 +7,7 @@ from app.models import GSTR1Generation, GSTProfile
 from app.services.gstr1_generator import generate_gstr1, GenerationBlockedError
 from app.services.reconciliation_service import run_full_reconciliation
 from app.services.audit_service import log_generation_audit, extract_generation_summary
+from app.services.classification_service import GST_RULE_VERSION
 from app.utils.query import tenant_query
 from app.extensions import db
 from . import generate_bp
@@ -43,6 +44,7 @@ def index():
         generations=generations,
         recon_report=recon_report,
         return_period=return_period,
+        gst_rule_version=GST_RULE_VERSION,
     )
 
 def _save_generation_record(profile, return_period, gen_result, recon_report, existing_gen_id=None, audit_action='CREATE', old_summary=None):

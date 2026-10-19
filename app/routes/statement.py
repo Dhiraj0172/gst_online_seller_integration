@@ -113,11 +113,19 @@ def index():
     if not available_periods:
         available_periods = ['012025', '022025', '032025', '042025', '052025']
 
+    recon_summary = None
+    if profile_id and return_period:
+        try:
+            recon_summary = get_reconciliation_summary(profile_id, return_period)
+        except Exception as e:
+            current_app.logger.warning(f"Failed to fetch reconciliation summary: {e}")
+
     return render_template(
         'statement.html',
         active_profile=active_profile,
         active_return_period=return_period,
         available_periods=available_periods,
+        recon_summary=recon_summary,
     )
 
 
@@ -646,8 +654,14 @@ def export_section(section):
 @login_required
 def resolve_reconciliation_record(record_id):
     profile_id = get_active_profile_id()
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.is_json
+
     if not profile_id:
-        return jsonify({'error': 'No active profile'}), 404
+        if is_ajax:
+            return jsonify({'error': 'No active profile'}), 404
+        from flask import flash, redirect, url_for
+        flash('No active profile found', 'danger')
+        return redirect(url_for('statement.index'))
 
     data = request.get_json(silent=True) or request.form or {}
     status = data.get('resolution_status') or data.get('status') or 'RESOLVED'
@@ -661,9 +675,18 @@ def resolve_reconciliation_record(record_id):
         resolution_note=note,
     )
     if not record:
-        return jsonify({'error': 'Reconciliation record not found'}), 404
+        if is_ajax:
+            return jsonify({'error': 'Reconciliation record not found'}), 404
+        from flask import flash, redirect, url_for
+        flash('Reconciliation record not found', 'danger')
+        return redirect(url_for('statement.index'))
 
-    return jsonify({'success': True, 'record': record.to_dict()})
+    if is_ajax:
+        return jsonify({'success': True, 'record': record.to_dict()})
+
+    from flask import flash, redirect, url_for
+    flash(f'Reconciliation exception #{record_id} resolved with status {status}.', 'success')
+    return redirect(url_for('statement.index', return_period=record.return_period))
 
 
 

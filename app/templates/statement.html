@@ -9,7 +9,10 @@
             <span class="ms-2 badge bg-light text-dark border">{{ active_profile.gstin|default('No GSTIN') }}</span>
         </div>
     </div>
-    <div class="d-flex align-items-center gap-2">
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+        <a href="{{ url_for('statement.export_reconciliation_report', return_period=active_return_period) }}" class="btn btn-sm btn-outline-success">
+            <i class="fas fa-file-csv me-1"></i>Export Reconciliation Report (CSV)
+        </a>
         <span class="badge bg-primary fs-6 px-3 py-2" id="activePeriodBadge">
             <i class="fas fa-calendar-alt me-1"></i>Period: <span id="activePeriodDisplay">{{ active_return_period }}</span>
         </span>
@@ -63,7 +66,203 @@
     </div>
 </div>
 
-<!-- Section Navigation Tabs -->
+<!-- Source-to-Normalized Conservation Summary & Reconciliation Workspace -->
+{% if recon_summary %}
+{% set cp = recon_summary.conservation_proof or recon_summary.row_conservation %}
+{% set bs = recon_summary.bucket_summary or {} %}
+
+<!-- 1. Conservation Invariant Card -->
+<div class="card shadow-sm border-0 mb-4">
+    <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h6 class="mb-0 fw-bold text-dark">
+            <i class="fas fa-balance-scale text-primary me-2"></i>Source-to-Normalized Row Conservation Invariant
+        </h6>
+        <div>
+            {% if cp and cp.is_conserved %}
+            <span class="badge bg-success-subtle text-success border border-success">
+                <i class="fas fa-check-circle me-1"></i>CONSERVED (drift = 0)
+            </span>
+            {% elif cp %}
+            <span class="badge bg-danger-subtle text-danger border border-danger">
+                <i class="fas fa-exclamation-triangle me-1"></i>DRIFT DETECTED (drift = {{ cp.drift }})
+            </span>
+            {% endif %}
+            <span class="badge bg-light text-muted border ms-1">Invariant: Input == Accepted + Rejected + Excluded</span>
+        </div>
+    </div>
+    <div class="card-body py-3">
+        <div class="row g-2 text-center align-items-center">
+            <div class="col-md-3 col-6">
+                <div class="p-2 border rounded bg-light">
+                    <small class="text-muted d-block text-uppercase fw-semibold">Input (Raw Source)</small>
+                    <span class="fs-4 fw-bold text-dark">{{ cp.total_source_input|default(0) }}</span>
+                    <small class="d-block text-muted">100% Marketplace rows</small>
+                </div>
+            </div>
+            <div class="col-md-1 d-none d-md-block text-muted fs-4">=</div>
+            <div class="col-md-2 col-6">
+                <div class="p-2 border rounded bg-success-subtle border-success">
+                    <small class="text-success d-block text-uppercase fw-semibold">Accepted</small>
+                    <span class="fs-4 fw-bold text-success">{{ cp.accepted_rows|default(0) }}</span>
+                    <small class="d-block text-success-emphasis">Active Transactions</small>
+                </div>
+            </div>
+            <div class="col-md-1 d-none d-md-block text-muted fs-4">+</div>
+            <div class="col-md-2 col-6">
+                <div class="p-2 border rounded bg-danger-subtle border-danger">
+                    <small class="text-danger d-block text-uppercase fw-semibold">Rejected</small>
+                    <span class="fs-4 fw-bold text-danger">{{ cp.rejected_rows|default(0) }}</span>
+                    <small class="d-block text-danger-emphasis">Validation Failures</small>
+                </div>
+            </div>
+            <div class="col-md-1 d-none d-md-block text-muted fs-4">+</div>
+            <div class="col-md-2 col-6">
+                <div class="p-2 border rounded bg-secondary-subtle border-secondary">
+                    <small class="text-secondary d-block text-uppercase fw-semibold">Excluded</small>
+                    <span class="fs-4 fw-bold text-secondary">{{ cp.duplicate_rows|default(0) }}</span>
+                    <small class="d-block text-secondary-emphasis">Duplicates / Staged</small>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 2. Reconciliation Buckets Card (All 6 Statutory Buckets) -->
+<div class="card shadow-sm border-0 mb-4">
+    <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h6 class="mb-0 fw-bold text-dark">
+            <i class="fas fa-layer-group text-primary me-2"></i>Reconciliation Buckets (Period: {{ active_return_period }})
+        </h6>
+        <div>
+            <a href="{{ url_for('statement.export_reconciliation_report', return_period=active_return_period) }}" class="btn btn-sm btn-outline-success">
+                <i class="fas fa-file-csv me-1"></i>Export Reconciliation Report (CSV)
+            </a>
+        </div>
+    </div>
+    <div class="card-body py-3">
+        <div class="row g-2">
+            <div class="col-lg-2 col-md-4 col-sm-6">
+                <div class="p-2 border rounded border-start border-success border-4 bg-light text-center h-100">
+                    <small class="text-muted d-block fw-semibold text-truncate" title="Exact match without discrepancy">MATCHED</small>
+                    <span class="fs-5 fw-bold text-success">{{ bs.get('MATCHED', 0) }}</span>
+                    <small class="d-block text-muted" style="font-size: 0.72rem;">Zero discrepancy</small>
+                </div>
+            </div>
+            <div class="col-lg-2 col-md-4 col-sm-6">
+                <div class="p-2 border rounded border-start border-warning border-4 bg-light text-center h-100">
+                    <small class="text-muted d-block fw-semibold text-truncate" title="Matched with minor acceptable variance">VARIANCE</small>
+                    <span class="fs-5 fw-bold text-warning-emphasis">{{ bs.get('MATCHED_WITH_VARIANCE', 0) }}</span>
+                    <small class="d-block text-muted" style="font-size: 0.72rem;">Rounding / tolerance</small>
+                </div>
+            </div>
+            <div class="col-lg-2 col-md-4 col-sm-6">
+                <div class="p-2 border rounded border-start border-danger border-4 bg-light text-center h-100">
+                    <small class="text-muted d-block fw-semibold text-truncate" title="Rejected source import rows">UNMATCHED SRC</small>
+                    <span class="fs-5 fw-bold text-danger">{{ bs.get('UNMATCHED_SOURCE', 0) }}</span>
+                    <small class="d-block text-muted" style="font-size: 0.72rem;">Source rejected rows</small>
+                </div>
+            </div>
+            <div class="col-lg-2 col-md-4 col-sm-6">
+                <div class="p-2 border rounded border-start border-info border-4 bg-light text-center h-100">
+                    <small class="text-muted d-block fw-semibold text-truncate" title="Missing master data or party GSTIN">UNMATCHED NORM</small>
+                    <span class="fs-5 fw-bold text-info">{{ bs.get('UNMATCHED_NORMALIZED', 0) }}</span>
+                    <small class="d-block text-muted" style="font-size: 0.72rem;">Missing master data</small>
+                </div>
+            </div>
+            <div class="col-lg-2 col-md-4 col-sm-6">
+                <div class="p-2 border rounded border-start border-secondary border-4 bg-light text-center h-100">
+                    <small class="text-muted d-block fw-semibold text-truncate" title="Ambiguous duplicate candidates">AMBIGUOUS</small>
+                    <span class="fs-5 fw-bold text-secondary">{{ bs.get('AMBIGUOUS', 0) }}</span>
+                    <small class="d-block text-muted" style="font-size: 0.72rem;">Candidate collisions</small>
+                </div>
+            </div>
+            <div class="col-lg-2 col-md-4 col-sm-6">
+                <div class="p-2 border rounded border-start border-dark border-4 bg-light text-center h-100">
+                    <small class="text-muted d-block fw-semibold text-truncate" title="Excluded by statutory rules">EXCLUDED RULE</small>
+                    <span class="fs-5 fw-bold text-dark">{{ bs.get('EXCLUDED_BY_RULE', 0) }}</span>
+                    <small class="d-block text-muted" style="font-size: 0.72rem;">Statutory rules</small>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 3. Reconciliation Exceptions & Interactive Resolution Table -->
+{% if recon_summary.exceptions and recon_summary.exceptions|length > 0 %}
+<div class="card shadow-sm border-0 mb-4">
+    <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h6 class="mb-0 fw-bold text-dark">
+            <i class="fas fa-exclamation-triangle text-warning me-2"></i>Reconciliation Exceptions & Resolution Audit
+            <span class="badge bg-warning text-dark ms-2">{{ recon_summary.exceptions|length }} recorded</span>
+        </h6>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>ID</th>
+                        <th>Bucket</th>
+                        <th>Severity</th>
+                        <th>Exception Code & Description</th>
+                        <th>Variance (Taxable / Tax)</th>
+                        <th>Resolution Status</th>
+                        <th>Resolution Note</th>
+                        <th class="text-end">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ex in recon_summary.exceptions %}
+                    <tr>
+                        <td><code>#{{ ex.id }}</code></td>
+                        <td>
+                            <span class="badge bg-secondary-subtle text-dark border">{{ ex.bucket }}</span>
+                        </td>
+                        <td>
+                            {% if ex.severity == 'BLOCKING' %}
+                            <span class="badge bg-danger">BLOCKING</span>
+                            {% elif ex.severity == 'WARNING' %}
+                            <span class="badge bg-warning text-dark">WARNING</span>
+                            {% else %}
+                            <span class="badge bg-info text-dark">INFO</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="fw-semibold"><code>{{ ex.code }}</code></div>
+                            <small class="text-muted">{{ ex.description }}</small>
+                        </td>
+                        <td>
+                            <small class="d-block">Taxable: ₹{{ "%.2f"|format(ex.variance_taxable|default(0)) }}</small>
+                            <small class="text-muted">Tax: ₹{{ "%.2f"|format(ex.variance_tax|default(0)) }}</small>
+                        </td>
+                        <td>
+                            {% if ex.resolution_status == 'RESOLVED' %}
+                            <span class="badge bg-success"><i class="fas fa-check me-1"></i>RESOLVED</span>
+                            {% elif ex.resolution_status == 'IGNORED' %}
+                            <span class="badge bg-secondary">IGNORED</span>
+                            {% elif ex.resolution_status == 'OVERRIDDEN' %}
+                            <span class="badge bg-info text-dark">OVERRIDDEN</span>
+                            {% else %}
+                            <span class="badge bg-danger-subtle text-danger border border-danger">OPEN</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <small class="text-muted">{{ ex.resolution_note or '—' }}</small>
+                        </td>
+                        <td class="text-end">
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="openResolveModal('{{ ex.id }}', '{{ ex.bucket }}', '{{ ex.code }}', '{{ ex.resolution_status }}', '{{ ex.resolution_note|default('')|replace('\'', '\\\'')|replace('\"', '&quot;') }}')">
+                                <i class="fas fa-edit me-1"></i>Resolve
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endif %}
 <ul class="nav nav-tabs mb-3" id="statementTabs" role="tablist">
     <li class="nav-item" role="presentation">
         <button class="nav-link active fw-semibold" id="tab-b2b" data-bs-toggle="tab" data-section="b2b" type="button" role="tab">B2B Supplies</button>
@@ -281,6 +480,49 @@
                     <i class="fas fa-trash me-1"></i>Confirm Bulk Delete
                 </button>
             </div>
+<!-- Interactive Resolve Exception Modal -->
+<div class="modal fade" id="resolveExceptionModal" tabindex="-1" aria-labelledby="resolveExceptionModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-primary">
+                <h5 class="modal-title" id="resolveExceptionModalLabel">
+                    <i class="fas fa-clipboard-check text-primary me-2"></i>Resolve Reconciliation Exception #<span id="resolveRecordIdDisplay"></span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="resolveExceptionForm" method="POST" action="">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" id="resolveRecordId" name="record_id">
+                <div class="modal-body">
+                    <div id="resolveModalAlert" class="alert d-none py-2 small" role="alert"></div>
+                    <div class="mb-3 p-2 bg-light border rounded">
+                        <small class="text-muted d-block">Exception Context</small>
+                        <div class="fw-semibold">
+                            <span id="resolveBucketBadge" class="badge bg-secondary me-2"></span>
+                            <code id="resolveCodeText"></code>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="resolutionStatusSelect" class="form-label small fw-semibold">Statutory Resolution Status <span class="text-danger">*</span></label>
+                        <select class="form-select form-select-sm" id="resolutionStatusSelect" name="resolution_status" required>
+                            <option value="RESOLVED">RESOLVED — Reconciled & Verified</option>
+                            <option value="IGNORED">IGNORED — Minor / Non-blocking variance accepted</option>
+                            <option value="OVERRIDDEN">OVERRIDDEN — Statutory override applied</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="resolutionNoteInput" class="form-label small fw-semibold">Audit Resolution Note <span class="text-danger">*</span></label>
+                        <textarea class="form-control form-control-sm" id="resolutionNoteInput" name="resolution_note" rows="3" placeholder="State justification for resolution note in statutory AuditLog..." required></textarea>
+                        <div class="form-text small text-muted">This note will be permanently logged in the audit trail.</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-sm btn-primary" id="confirmResolveBtn">
+                        <i class="fas fa-check me-1"></i>Save Resolution Note
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
@@ -784,6 +1026,62 @@
                 $('#confirmBulkDeleteBtn').prop('disabled', false).html('<i class="fas fa-trash me-1"></i>Confirm Bulk Delete');
                 const msg = xhr.responseJSON?.message || 'Failed to bulk-delete transactions.';
                 $('#bulkDeleteModalAlert').removeClass('d-none').text(msg);
+            }
+        });
+    // 11. Interactive Resolve Exception Flow
+    const resolveModalEl = document.getElementById('resolveExceptionModal');
+    const resolveModal = resolveModalEl ? new bootstrap.Modal(resolveModalEl) : null;
+
+    window.openResolveModal = function(id, bucket, code, status, note) {
+        $('#resolveRecordId').val(id);
+        $('#resolveRecordIdDisplay').text(id);
+        $('#resolveBucketBadge').text(bucket);
+        $('#resolveCodeText').text(code);
+        $('#resolutionStatusSelect').val(status && status !== 'OPEN' ? status : 'RESOLVED');
+        $('#resolutionNoteInput').val(note || '');
+        $('#resolveModalAlert').addClass('d-none').removeClass('alert-danger alert-success');
+        $('#resolveExceptionForm').attr('action', `/statement/reconciliation/resolve/${id}`);
+        if (resolveModal) resolveModal.show();
+    };
+
+    $('#resolveExceptionForm').on('submit', function(e) {
+        e.preventDefault();
+        const id = $('#resolveRecordId').val();
+        const status = $('#resolutionStatusSelect').val();
+        const note = $('#resolutionNoteInput').val().trim();
+        const csrf = $('input[name="csrf_token"]').val();
+
+        if (!note) {
+            $('#resolveModalAlert').removeClass('d-none alert-success').addClass('alert-danger')
+                .text('Resolution note is required for statutory audit trail compliance.');
+            return;
+        }
+
+        $('#confirmResolveBtn').prop('disabled', true).html('<i class="fas fa-spinner fa-spin me-1"></i>Saving...');
+
+        $.ajax({
+            url: `/statement/reconciliation/resolve/${id}`,
+            method: 'POST',
+            contentType: 'application/json',
+            headers: {
+                'X-CSRFToken': csrf,
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            data: JSON.stringify({
+                resolution_status: status,
+                resolution_note: note
+            }),
+            dataType: 'json',
+            success: function(res) {
+                $('#confirmResolveBtn').prop('disabled', false).html('<i class="fas fa-check me-1"></i>Save Resolution Note');
+                if (resolveModal) resolveModal.hide();
+                showAlert(`Exception #${id} successfully resolved with status ${status}.`);
+                setTimeout(() => { window.location.reload(); }, 600);
+            },
+            error: function(xhr) {
+                $('#confirmResolveBtn').prop('disabled', false).html('<i class="fas fa-check me-1"></i>Save Resolution Note');
+                const msg = xhr.responseJSON?.message || xhr.responseJSON?.error || 'Failed to resolve reconciliation exception.';
+                $('#resolveModalAlert').removeClass('d-none alert-success').addClass('alert-danger').text(msg);
             }
         });
     });

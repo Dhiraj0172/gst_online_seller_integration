@@ -1,94 +1,207 @@
 {% extends 'base.html' %}
 {% block title %}Import History - GST Online Seller{% endblock %}
 {% block content %}
-<h2 class="mb-4">Import History</h2>
-<div class="card shadow">
-    <div class="card-body">
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1"><i class="fas fa-history text-primary me-2"></i>Import History</h2>
+        <div class="text-muted small">
+            Track statutory import lifecycle, staging status, progress, and audit evidence across marketplace reports.
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('imports.import_page') }}" class="btn btn-primary">
+            <i class="fas fa-upload me-1"></i>New Marketplace Import
+        </a>
+    </div>
+</div>
+
+<div class="card shadow-sm border-0">
+    <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table align-middle">
-                <thead>
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
                     <tr>
-                        <th>Date</th>
+                        <th>Date & Time</th>
                         <th>Platform</th>
                         <th>File Name</th>
                         <th>Status</th>
-                        <th>Rows</th>
-                        <th>Import report</th>
-                        <th>Actions</th>
+                        <th>Progress</th>
+                        <th>Row Statistics</th>
+                        <th>Import Summary & Issues</th>
+                        <th class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% if history %}
                         {% for item in history %}
                         {% set report = reports.get(item.id) if reports is defined else None %}
+                        {% set pct = item.progress_pct if item.progress_pct is not none else (100 if item.processing_status in ('COMPLETED', 'STAGED', 'CANCELLED', 'SUPERSEDED') else 0) %}
                         <tr>
-                            <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '' }}</td>
-                            <td>{{ item.platform_name }}</td>
-                            <td>{{ item.file_name }}</td>
                             <td>
+                                <div class="fw-semibold text-dark">{{ item.created_at.strftime('%d-%b-%Y') if item.created_at else '' }}</div>
+                                <small class="text-muted">{{ item.created_at.strftime('%H:%M:%S UTC') if item.created_at else '' }}</small>
+                            </td>
+                            <td>
+                                <span class="badge bg-secondary-subtle text-secondary-emphasis border">
+                                    {{ item.platform_name }}
+                                </span>
+                                <div class="small text-muted">{{ item.return_period or '' }}</div>
+                            </td>
+                            <td>
+                                <div class="fw-medium text-break" style="max-width: 220px;">{{ item.file_name }}</div>
+                                <small class="text-muted">
+                                    {% if item.file_size %}
+                                    {{ "%.1f"|format(item.file_size / 1024) }} KB
+                                    {% endif %}
+                                    {% if item.file_hash %}
+                                    &bull; <code class="text-muted" title="{{ item.file_hash }}">{{ item.file_hash[:8] }}...</code>
+                                    {% endif %}
+                                </small>
+                            </td>
+                            <td>
+                                <!-- Status Badges for all 6 statutory states -->
                                 {% if item.processing_status == 'COMPLETED' %}
-                                <span class="badge bg-success">{{ item.processing_status }}</span>
+                                <span class="badge bg-success-subtle text-success border border-success">
+                                    <i class="fas fa-check-circle me-1"></i>COMPLETED
+                                </span>
                                 {% elif item.processing_status == 'STAGED' %}
-                                <span class="badge bg-primary">{{ item.processing_status }}</span>
-                                {% elif item.processing_status == 'PARTIAL' %}
-                                <span class="badge bg-warning text-dark">{{ item.processing_status }}</span>
+                                <span class="badge bg-primary-subtle text-primary border border-primary">
+                                    <i class="fas fa-eye me-1"></i>STAGED
+                                </span>
+                                {% elif item.processing_status == 'PROCESSING' %}
+                                <span class="badge bg-info-subtle text-info-emphasis border border-info">
+                                    <i class="fas fa-spinner fa-spin me-1"></i>PROCESSING
+                                </span>
                                 {% elif item.processing_status == 'FAILED' %}
-                                <span class="badge bg-danger">{{ item.processing_status }}</span>
+                                <span class="badge bg-danger-subtle text-danger border border-danger">
+                                    <i class="fas fa-times-circle me-1"></i>FAILED
+                                </span>
+                                {% elif item.processing_status == 'CANCELLED' %}
+                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning">
+                                    <i class="fas fa-ban me-1"></i>CANCELLED
+                                </span>
+                                {% elif item.processing_status == 'SUPERSEDED' %}
+                                <span class="badge bg-dark-subtle text-dark border border-secondary">
+                                    <i class="fas fa-history me-1"></i>SUPERSEDED
+                                </span>
+                                {% elif item.processing_status == 'PARTIAL' %}
+                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning">
+                                    <i class="fas fa-exclamation-triangle me-1"></i>PARTIAL
+                                </span>
                                 {% else %}
                                 <span class="badge bg-secondary">{{ item.processing_status }}</span>
                                 {% endif %}
                             </td>
                             <td>
-                                <small>
-                                    total {{ item.total_rows }}<br>
-                                    ok {{ item.success_rows }},
-                                    warn {{ item.warning_rows }},
-                                    err {{ item.error_rows }},
-                                    dup {{ item.skipped_rows }}
+                                <!-- Progress Percentage (progress_pct) -->
+                                <div class="d-flex align-items-center gap-2" style="min-width: 90px;">
+                                    <div class="progress flex-grow-1" style="height: 6px;">
+                                        <div class="progress-bar {% if item.processing_status == 'COMPLETED' %}bg-success{% elif item.processing_status == 'FAILED' %}bg-danger{% elif item.processing_status == 'STAGED' %}bg-primary{% elif item.processing_status == 'CANCELLED' %}bg-secondary{% else %}bg-info{% endif %}" role="progressbar" style="width: {{ pct }}%" aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                                    </div>
+                                    <small class="fw-bold text-muted">{{ pct }}%</small>
+                                </div>
+                            </td>
+                            <td>
+                                <small class="d-block">
+                                    <span class="text-muted">Total:</span> <strong>{{ item.total_rows or 0 }}</strong>
+                                </small>
+                                <small class="text-muted">
+                                    <span class="text-success">OK: {{ item.success_rows or 0 }}</span> &bull;
+                                    <span class="text-warning">Warn: {{ item.warning_rows or 0 }}</span> &bull;
+                                    <span class="text-danger">Err: {{ item.error_rows or 0 }}</span>
+                                    {% if item.skipped_rows %}
+                                    &bull; <span class="text-secondary">Dup: {{ item.skipped_rows }}</span>
+                                    {% endif %}
                                 </small>
                             </td>
                             <td>
                                 {% if report %}
                                     {% if report.errors %}
                                         <ul class="mb-1 ps-3 small text-danger">
-                                            {% for entry in report.errors[:4] %}
+                                            {% for entry in report.errors[:3] %}
                                             <li><code>{{ entry.code }}</code>
                                                 {% if entry.row %}row {{ entry.row }}:{% endif %}
                                                 {{ entry.message }}</li>
                                             {% endfor %}
                                         </ul>
-                                        {% if report.errors|length > 4 %}
-                                        <small class="text-muted">{{ report.errors|length - 4 }} more error(s)</small>
+                                        {% if report.errors|length > 3 %}
+                                        <small class="text-muted">{{ report.errors|length - 3 }} more error(s)</small>
                                         {% endif %}
                                     {% endif %}
                                     {% if report.duplicates %}
                                         <ul class="mb-1 ps-3 small text-warning">
-                                            {% for entry in report.duplicates[:4] %}
+                                            {% for entry in report.duplicates[:2] %}
                                             <li><code>{{ entry.code }}</code> row {{ entry.row }}: {{ entry.message }}</li>
                                             {% endfor %}
                                         </ul>
-                                        {% if report.duplicates|length > 4 %}
-                                        <small class="text-muted">{{ report.duplicates|length - 4 }} more duplicate(s)</small>
+                                        {% if report.duplicates|length > 2 %}
+                                        <small class="text-muted">{{ report.duplicates|length - 2 }} more duplicate(s)</small>
                                         {% endif %}
                                     {% endif %}
-                                    {% if report.warnings %}
-                                        <small class="text-muted">{{ report.warnings|length }} row warning(s) recorded</small>
+                                    {% if report.warnings and not report.errors and not report.duplicates %}
+                                        <small class="text-muted">{{ report.warnings|length }} validation warning(s) logged</small>
                                     {% endif %}
                                     {% if not report.errors and not report.duplicates and not report.warnings %}
-                                        <small class="text-muted">No issues.</small>
+                                        <small class="text-success"><i class="fas fa-check me-1"></i>Clean import</small>
                                     {% endif %}
+                                {% else %}
+                                    <small class="text-muted">--</small>
                                 {% endif %}
                             </td>
-                            <td>
-                                {% if item.processing_status == 'STAGED' %}
-                                <a href="{{ url_for('imports.preview_view', id=item.id) }}" class="btn btn-sm btn-primary me-1">Preview & Confirm</a>
-                                {% endif %}
-                                <a href="{{ url_for('imports.detail', id=item.id) }}" class="btn btn-sm btn-outline-info">Detail</a>
+                            <td class="text-end">
+                                <div class="d-flex justify-content-end align-items-center gap-1 flex-wrap">
+                                    <!-- Action Button: Preview -->
+                                    {% if item.processing_status in ('STAGED', 'COMPLETED', 'PARTIAL') %}
+                                    <a href="{{ url_for('imports.preview_view', id=item.id) }}" class="btn btn-sm btn-outline-primary" title="Preview Candidate Transactions">
+                                        <i class="fas fa-eye me-1"></i>Preview
+                                    </a>
+                                    {% endif %}
+
+                                    <!-- Action Button: Confirm Import (CSRF-protected POST) -->
+                                    {% if item.processing_status == 'STAGED' %}
+                                    <form method="POST" action="{{ url_for('imports.confirm_view', id=item.id) }}" class="d-inline">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-sm btn-success" title="Confirm Staged Transactions into Returns">
+                                            <i class="fas fa-check-circle me-1"></i>Confirm
+                                        </button>
+                                    </form>
+                                    {% endif %}
+
+                                    <!-- Action Button: Cancel Import (CSRF-protected POST) -->
+                                    {% if item.processing_status in ('STAGED', 'PROCESSING') %}
+                                    <form method="POST" action="{{ url_for('imports.cancel_view', id=item.id) }}" class="d-inline" onsubmit="return confirm('Discard candidate records for {{ item.file_name }}?');">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Cancel & Discard Staged Import">
+                                            <i class="fas fa-times me-1"></i>Cancel
+                                        </button>
+                                    </form>
+                                    {% endif %}
+
+                                    <!-- Action Button: Retry Failed Import (CSRF-protected POST) -->
+                                    {% if item.processing_status in ('FAILED', 'CANCELLED', 'PARTIAL') %}
+                                    <form method="POST" action="{{ url_for('imports.retry_view', id=item.id) }}" class="d-inline">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-warning" title="Retry Import with Clean State">
+                                            <i class="fas fa-redo me-1"></i>Retry
+                                        </button>
+                                    </form>
+                                    {% endif %}
+
+                                    <!-- Action Button: Detail -->
+                                    <a href="{{ url_for('imports.detail', id=item.id) }}" class="btn btn-sm btn-outline-secondary" title="View Audit Details">
+                                        <i class="fas fa-info-circle"></i>
+                                    </a>
+                                </div>
                             </td>
                         </tr>
                         {% endfor %}
                     {% else %}
-                        <tr><td colspan="7" class="text-center">No history available</td></tr>
+                        <tr>
+                            <td colspan="8" class="text-center py-4 text-muted">
+                                <i class="fas fa-inbox fa-3x mb-3 text-secondary d-block"></i>
+                                <div>No import records found. Upload a report from the Import Data page to begin.</div>
+                            </td>
+                        </tr>
                     {% endif %}
                 </tbody>
             </table>

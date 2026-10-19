@@ -1,27 +1,48 @@
 {% extends 'base.html' %}
 {% block title %}Generate GSTR-1 - GST Online Seller{% endblock %}
 {% block content %}
-<h2 class="mb-4">Generate GSTR-1</h2>
-
-{% if recon_report and recon_report.is_generation_blocked %}
-<div class="alert alert-danger d-flex align-items-center mb-4" role="alert">
-    <i class="fas fa-exclamation-triangle fa-2x me-3"></i>
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
     <div>
-        <h5 class="alert-heading mb-1">GSTR-1 Generation Blocked</h5>
-        <div>There are <strong>{{ recon_report.critical_failures }}</strong> critical reconciliation error(s) in return period <strong>{{ return_period }}</strong>. Please review and fix validation errors before generating returns.</div>
+        <h2 class="mb-1 d-flex align-items-center flex-wrap">
+            <i class="fas fa-file-export text-primary me-2"></i>Generate GSTR-1
+            <span class="badge bg-secondary fs-6 ms-2" title="Statutory Rule Engine Version">
+                <i class="fas fa-shield-alt me-1"></i>GST Rules: {{ gst_rule_version|default('2026.1') }}
+            </span>
+        </h2>
+        <div class="text-muted small">
+            Authoritative GSTR-1 compilation, snapshot checksum integrity verification, and pre-filing reconciliation gating.
+        </div>
+    </div>
+    <div>
+        <span class="badge bg-primary fs-6 px-3 py-2">
+            <i class="fas fa-calendar-alt me-1"></i>Period: {{ return_period }}
+        </span>
+    </div>
+</div>
+
+<!-- Reconciliation Gate Alerts -->
+{% if recon_report and recon_report.is_generation_blocked %}
+<div class="alert alert-danger d-flex align-items-center mb-4 shadow-sm" role="alert">
+    <i class="fas fa-ban fa-2x me-3"></i>
+    <div>
+        <h5 class="alert-heading mb-1">GSTR-1 Generation Gate: BLOCKED</h5>
+        <div>There are <strong>{{ recon_report.critical_failures }}</strong> critical reconciliation error(s) in return period <strong>{{ return_period }}</strong>. Statutory rules prevent generation when mathematical or entity integrity is broken.</div>
         <div class="mt-2">
-            <a href="{{ url_for('statement.validation_errors', return_period=return_period) }}" class="btn btn-sm btn-outline-danger">
+            <a href="{{ url_for('statement.validation_errors', return_period=return_period) }}" class="btn btn-sm btn-danger">
                 <i class="fas fa-search me-1"></i>Inspect Validation Errors & Pre-Filing Review
+            </a>
+            <a href="{{ url_for('statement.index', return_period=return_period) }}" class="btn btn-sm btn-outline-secondary ms-1">
+                <i class="fas fa-table me-1"></i>Open Statement Workspace
             </a>
         </div>
     </div>
 </div>
 {% elif recon_report and recon_report.status == 'WARNING' %}
-<div class="alert alert-warning d-flex align-items-center mb-4" role="alert">
-    <i class="fas fa-exclamation-circle fa-2x me-3"></i>
+<div class="alert alert-warning d-flex align-items-center mb-4 shadow-sm" role="alert">
+    <i class="fas fa-exclamation-triangle fa-2x me-3"></i>
     <div>
-        <h5 class="alert-heading mb-1">Pre-Filing Warnings Detected</h5>
-        <div>There are <strong>{{ recon_report.warnings }}</strong> non-blocking warning(s) in return period <strong>{{ return_period }}</strong>. You may proceed with generation, but review is recommended.</div>
+        <h5 class="alert-heading mb-1">Pre-Filing Warnings Detected (Gate: WARNING)</h5>
+        <div>There are <strong>{{ recon_report.warnings }}</strong> non-blocking warning(s) in return period <strong>{{ return_period }}</strong>. Generation is permitted, but reviewing discrepancies is strongly advised.</div>
         <div class="mt-2">
             <a href="{{ url_for('statement.validation_errors', return_period=return_period) }}" class="btn btn-sm btn-outline-warning">
                 <i class="fas fa-search me-1"></i>Inspect Warnings
@@ -31,36 +52,55 @@
 </div>
 {% endif %}
 
-<div class="row">
+<div class="row g-4">
+    <!-- Pre-generation Gate Checklist -->
     <div class="col-md-6">
-        <div class="card shadow">
+        <div class="card shadow-sm border-0 h-100">
+            <div class="card-header bg-white py-3">
+                <h5 class="mb-0 fw-bold"><i class="fas fa-tasks text-primary me-2"></i>Pre-Generation Checklist & Integrity Gates</h5>
+            </div>
             <div class="card-body">
-                <h5 class="card-title">Pre-generation Checklist</h5>
-                <ul class="list-group list-group-flush mb-3">
-                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                        Validation & Integrity Checks
+                <ul class="list-group list-group-flush mb-4">
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                        <div>
+                            <span class="fw-semibold">GST Rule Version</span>
+                            <small class="d-block text-muted">Statutory rules applied to return generation</small>
+                        </div>
+                        <span class="badge bg-secondary rounded-pill fs-6">{{ gst_rule_version|default('2026.1') }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                        <div>
+                            <span class="fw-semibold">Validation & Integrity Gate</span>
+                            <small class="d-block text-muted">Document uniqueness, POS code, tax arithmetic</small>
+                        </div>
                         {% if recon_report and recon_report.is_generation_blocked %}
-                        <span class="badge bg-danger rounded-pill"><i class="fas fa-times me-1"></i>Blocked</span>
+                        <span class="badge bg-danger rounded-pill"><i class="fas fa-times me-1"></i>BLOCKED</span>
                         {% elif recon_report and recon_report.status == 'WARNING' %}
-                        <span class="badge bg-warning rounded-pill text-dark"><i class="fas fa-exclamation me-1"></i>Warnings</span>
+                        <span class="badge bg-warning rounded-pill text-dark"><i class="fas fa-exclamation me-1"></i>WARNING</span>
                         {% else %}
-                        <span class="badge bg-success rounded-pill"><i class="fas fa-check me-1"></i>Passed</span>
+                        <span class="badge bg-success rounded-pill"><i class="fas fa-check me-1"></i>CLEAN</span>
                         {% endif %}
                     </li>
-                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                        Reconciliation Review
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                        <div>
+                            <span class="fw-semibold">Reconciliation Audit Review</span>
+                            <small class="d-block text-muted">Conservation invariant & exception status</small>
+                        </div>
                         <a href="{{ url_for('statement.validation_errors', return_period=return_period) }}" class="small text-decoration-none">
                             {% if recon_report and recon_report.is_generation_blocked %}
                             <span class="text-danger fw-semibold">Review Errors ({{ recon_report.critical_failures }})</span>
                             {% elif recon_report and recon_report.status == 'WARNING' %}
                             <span class="text-warning fw-semibold">Review Warnings ({{ recon_report.warnings }})</span>
                             {% else %}
-                            <span class="text-success fw-semibold">Review Details (All Pass)</span>
+                            <span class="text-success fw-semibold">All Checks Passed</span>
                             {% endif %}
                         </a>
                     </li>
-                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                        Active Return Period
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                        <div>
+                            <span class="fw-semibold">Active Return Period</span>
+                            <small class="d-block text-muted">Month and year for return filing</small>
+                        </div>
                         <span class="badge bg-primary rounded-pill">{{ return_period }}</span>
                     </li>
                 </ul>
@@ -68,16 +108,17 @@
                 <form action="{{ url_for('generate.run') }}" method="POST" id="generateForm">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="return_period" value="{{ return_period }}">
-                    <div class="form-check mb-3">
+                    <div class="form-check form-switch mb-4">
                         <input class="form-check-input" type="checkbox" id="includeHsn" name="include_hsn" checked>
-                        <label class="form-check-label" for="includeHsn">Include HSN details</label>
+                        <label class="form-check-label fw-semibold" for="includeHsn">Include Table 12 HSN/SAC Summary details</label>
                     </div>
+
                     {% if recon_report and recon_report.is_generation_blocked %}
-                    <button type="button" class="btn btn-secondary w-100" disabled>
-                        <i class="fas fa-lock me-1"></i>Generation Blocked - Resolve Issues First
+                    <button type="button" class="btn btn-secondary w-100 py-2" disabled>
+                        <i class="fas fa-lock me-1"></i>Generation Blocked — Resolve Issues First
                     </button>
                     {% else %}
-                    <button type="submit" class="btn btn-success w-100" id="generateBtn">
+                    <button type="submit" class="btn btn-success w-100 py-2" id="generateBtn">
                         <i class="fas fa-file-invoice me-1"></i>Generate Return Files
                     </button>
                     {% endif %}
@@ -85,11 +126,13 @@
             </div>
         </div>
     </div>
+
+    <!-- Latest Generation Summary & Downloads -->
     <div class="col-md-6">
         {% set latest_gen = generations[0] if (generations and generations|length > 0) else none %}
-        <div class="card shadow mb-4" id="resultCard" {% if not (latest_gen and latest_gen.generation_status == 'COMPLETED') %}style="display: none;"{% endif %}>
-            <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
-                <span class="fw-bold"><i class="fas fa-check-circle me-2"></i>Generation Complete</span>
+        <div class="card shadow-sm border-0 mb-4" id="resultCard" {% if not (latest_gen and latest_gen.generation_status == 'COMPLETED') %}style="display: none;"{% endif %}>
+            <div class="card-header bg-success text-white d-flex justify-content-between align-items-center py-3">
+                <span class="fw-bold"><i class="fas fa-check-circle me-2"></i>GSTR-1 Generation Complete</span>
                 {% if latest_gen %}
                 <span class="badge bg-light text-success fw-bold">{{ latest_gen.return_period }}</span>
                 {% endif %}
@@ -98,23 +141,74 @@
                 {% if latest_gen %}
                 {% set total_inv = (latest_gen.total_b2b or 0) + (latest_gen.total_b2cs or 0) + (latest_gen.total_b2cl or 0) + (latest_gen.total_cdnr or 0) + (latest_gen.total_cdnur or 0) + (latest_gen.total_nil or 0) + (latest_gen.total_ecom or 0) %}
                 {% set total_tax = (latest_gen.total_cgst or 0) + (latest_gen.total_sgst or 0) + (latest_gen.total_igst or 0) + (latest_gen.total_cess or 0) %}
+                
+                <!-- Gate Status & Rule Version Banner -->
+                <div class="d-flex justify-content-between align-items-center p-2 mb-3 bg-light border rounded flex-wrap gap-2">
+                    <div>
+                        <small class="text-muted d-block">GATE STATUS</small>
+                        {% if latest_gen.gate_status == 'CLEAN' %}
+                        <span class="badge bg-success fs-6"><i class="fas fa-check-shield me-1"></i>CLEAN</span>
+                        {% elif latest_gen.gate_status == 'WARNING' %}
+                        <span class="badge bg-warning text-dark fs-6"><i class="fas fa-exclamation-triangle me-1"></i>WARNING</span>
+                        {% elif latest_gen.gate_status == 'BLOCKED' %}
+                        <span class="badge bg-danger fs-6"><i class="fas fa-ban me-1"></i>BLOCKED</span>
+                        {% else %}
+                        <span class="badge bg-secondary fs-6">{{ latest_gen.gate_status|default('CLEAN') }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="text-end">
+                        <small class="text-muted d-block">RULE VERSION</small>
+                        <span class="badge bg-dark">{{ gst_rule_version|default(latest_gen.rule_version|default('2026.1')) }}</span>
+                    </div>
+                </div>
+
+                <!-- Input Count & Snapshot Checksum -->
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <div class="p-2 border rounded bg-light text-center">
+                            <small class="text-muted d-block text-uppercase fw-semibold">Input Transactions</small>
+                            <span class="fs-4 fw-bold text-dark" id="metricInputCount">{{ latest_gen.input_count|default(total_inv) }}</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 border rounded bg-light text-center">
+                            <small class="text-muted d-block text-uppercase fw-semibold">Invoices Compiled</small>
+                            <span class="fs-4 fw-bold text-success" id="metricInvoices">{{ total_inv }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Deterministic Snapshot SHA-256 Checksum -->
+                {% if latest_gen.snapshot_checksum %}
+                <div class="p-2 mb-3 border rounded bg-light">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <small class="text-muted fw-semibold">
+                            <i class="fas fa-fingerprint me-1"></i>Snapshot SHA-256 Checksum
+                        </small>
+                        <span class="badge bg-secondary">Immutable</span>
+                    </div>
+                    <code class="text-break small d-block" style="font-size: 0.75rem;">{{ latest_gen.snapshot_checksum }}</code>
+                </div>
+                {% endif %}
+
+                <!-- Metrics Grid -->
                 <div class="row g-2 mb-3 text-center">
                     <div class="col-4">
                         <div class="p-2 border rounded bg-light">
-                            <small class="text-muted d-block">Invoices</small>
-                            <span class="fw-bold fs-5" id="metricInvoices">{{ total_inv }}</span>
-                        </div>
-                    </div>
-                    <div class="col-4">
-                        <div class="p-2 border rounded bg-light">
                             <small class="text-muted d-block">B2B</small>
-                            <span class="fw-bold fs-5" id="metricB2B">{{ latest_gen.total_b2b or 0 }}</span>
+                            <span class="fw-bold fs-6" id="metricB2B">{{ latest_gen.total_b2b or 0 }}</span>
                         </div>
                     </div>
                     <div class="col-4">
                         <div class="p-2 border rounded bg-light">
                             <small class="text-muted d-block">B2CS</small>
-                            <span class="fw-bold fs-5" id="metricB2CS">{{ latest_gen.total_b2cs or 0 }}</span>
+                            <span class="fw-bold fs-6" id="metricB2CS">{{ latest_gen.total_b2cs or 0 }}</span>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 border rounded bg-light">
+                            <small class="text-muted d-block">E-Commerce</small>
+                            <span class="fw-bold fs-6" id="metricEcom">{{ latest_gen.total_ecom or 0 }}</span>
                         </div>
                     </div>
                     <div class="col-6">
@@ -130,88 +224,84 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Download Buttons (Disabled when gate_status == 'BLOCKED') -->
+                {% if latest_gen.gate_status == 'BLOCKED' or recon_report.is_generation_blocked %}
+                <div class="alert alert-danger py-2 small mb-3" role="alert">
+                    <i class="fas fa-lock me-1"></i><strong>Downloads Disabled:</strong> Statutory gate status is <strong>BLOCKED</strong> due to reconciliation errors. Resolve discrepancies to enable export.
+                </div>
                 <div class="d-grid gap-2">
-                    <a href="{{ url_for('generate.download_excel', id=latest_gen.id) }}" class="btn btn-outline-primary" id="downloadExcelBtn">
-                        <i class="fas fa-file-excel me-2"></i>Download Excel
-                    </a>
-                    <a href="{{ url_for('generate.download_json', id=latest_gen.id) }}" class="btn btn-outline-info" id="downloadJsonBtn">
-                        <i class="fas fa-file-code me-2"></i>Download JSON
-                    </a>
+                    <button type="button" class="btn btn-outline-secondary" disabled title="Download blocked: Gate status is BLOCKED">
+                        <i class="fas fa-file-excel me-2"></i>Download Excel (Blocked)
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" disabled title="Download blocked: Gate status is BLOCKED">
+                        <i class="fas fa-file-code me-2"></i>Download JSON (Blocked)
+                    </button>
                 </div>
                 {% else %}
-                <div class="row g-2 mb-3 text-center">
-                    <div class="col-4">
-                        <div class="p-2 border rounded bg-light">
-                            <small class="text-muted d-block">Invoices</small>
-                            <span class="fw-bold fs-5" id="metricInvoices">0</span>
-                        </div>
-                    </div>
-                    <div class="col-4">
-                        <div class="p-2 border rounded bg-light">
-                            <small class="text-muted d-block">B2B</small>
-                            <span class="fw-bold fs-5" id="metricB2B">0</span>
-                        </div>
-                    </div>
-                    <div class="col-4">
-                        <div class="p-2 border rounded bg-light">
-                            <small class="text-muted d-block">B2CS</small>
-                            <span class="fw-bold fs-5" id="metricB2CS">0</span>
-                        </div>
-                    </div>
-                    <div class="col-6">
-                        <div class="p-2 border rounded bg-light">
-                            <small class="text-muted d-block">Taxable Value</small>
-                            <span class="fw-bold fs-6" id="metricTaxable">₹0.00</span>
-                        </div>
-                    </div>
-                    <div class="col-6">
-                        <div class="p-2 border rounded bg-light">
-                            <small class="text-muted d-block">Total Tax</small>
-                            <span class="fw-bold fs-6" id="metricTax">₹0.00</span>
-                        </div>
-                    </div>
-                </div>
                 <div class="d-grid gap-2">
-                    <a href="#" class="btn btn-outline-primary" id="downloadExcelBtn">
-                        <i class="fas fa-file-excel me-2"></i>Download Excel
+                    <a href="{{ url_for('generate.download_excel', id=latest_gen.id) }}" class="btn btn-outline-primary" id="downloadExcelBtn">
+                        <i class="fas fa-file-excel me-2"></i>Download Excel (Government Template)
                     </a>
-                    <a href="#" class="btn btn-outline-info" id="downloadJsonBtn">
-                        <i class="fas fa-file-code me-2"></i>Download JSON
+                    <a href="{{ url_for('generate.download_json', id=latest_gen.id) }}" class="btn btn-outline-info" id="downloadJsonBtn">
+                        <i class="fas fa-file-code me-2"></i>Download JSON (GST Portal Schema)
                     </a>
+                </div>
+                {% endif %}
+
+                {% else %}
+                <div class="text-center py-4 text-muted">
+                    <i class="fas fa-clock fa-2x mb-2 d-block"></i>
+                    <div>No finalized generation for this period yet. Click "Generate Return Files" to compile.</div>
                 </div>
                 {% endif %}
             </div>
         </div>
 
+        <!-- Recent Generations History Table -->
         {% if generations and generations|length > 0 %}
-        <div class="card shadow">
-            <div class="card-header bg-white">
-                <h6 class="mb-0 fw-bold">Recent Generations</h6>
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white py-3">
+                <h6 class="mb-0 fw-bold"><i class="fas fa-history text-secondary me-2"></i>Recent Generations & Audit Trail</h6>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
-                    <table class="table table-sm table-hover mb-0">
+                    <table class="table table-sm table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr>
                                 <th>Period</th>
-                                <th>Date</th>
-                                <th>Status</th>
-                                <th>Actions</th>
+                                <th>Timestamp</th>
+                                <th>Gate Status</th>
+                                <th>Inputs</th>
+                                <th class="text-end">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for gen in generations[:5] %}
                             <tr>
-                                <td>{{ gen.return_period }}</td>
-                                <td>{{ gen.created_at.strftime('%d-%m-%Y %H:%M') if gen.created_at else '-' }}</td>
+                                <td><strong>{{ gen.return_period }}</strong></td>
+                                <td><small class="text-muted">{{ gen.created_at.strftime('%d-%m-%Y %H:%M') if gen.created_at else '-' }}</small></td>
                                 <td>
-                                    <span class="badge {% if gen.generation_status == 'COMPLETED' %}bg-success{% else %}bg-secondary{% endif %}">
-                                        {{ gen.generation_status }}
-                                    </span>
+                                    {% if gen.gate_status == 'CLEAN' %}
+                                    <span class="badge bg-success-subtle text-success border border-success">CLEAN</span>
+                                    {% elif gen.gate_status == 'WARNING' %}
+                                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning">WARNING</span>
+                                    {% elif gen.gate_status == 'BLOCKED' %}
+                                    <span class="badge bg-danger-subtle text-danger border border-danger">BLOCKED</span>
+                                    {% else %}
+                                    <span class="badge bg-secondary">{{ gen.generation_status }}</span>
+                                    {% endif %}
                                 </td>
-                                <td>
-                                    <a href="{{ url_for('generate.download_excel', id=gen.id) }}" class="btn btn-xs btn-outline-primary py-0 px-1" title="Excel"><i class="fas fa-file-excel"></i></a>
-                                    <a href="{{ url_for('generate.download_json', id=gen.id) }}" class="btn btn-xs btn-outline-info py-0 px-1" title="JSON"><i class="fas fa-file-code"></i></a>
+                                <td><small>{{ gen.input_count|default(0) }} txs</small></td>
+                                <td class="text-end">
+                                    {% if gen.gate_status == 'BLOCKED' %}
+                                    <button class="btn btn-xs btn-outline-secondary py-0 px-2" disabled title="Download blocked: Gate status is BLOCKED">
+                                        <i class="fas fa-lock text-danger"></i>
+                                    </button>
+                                    {% else %}
+                                    <a href="{{ url_for('generate.download_excel', id=gen.id) }}" class="btn btn-xs btn-outline-primary py-0 px-1" title="Download Excel"><i class="fas fa-file-excel"></i></a>
+                                    <a href="{{ url_for('generate.download_json', id=gen.id) }}" class="btn btn-xs btn-outline-info py-0 px-1" title="Download JSON"><i class="fas fa-file-code"></i></a>
+                                    {% endif %}
                                 </td>
                             </tr>
                             {% endfor %}

@@ -1,51 +1,365 @@
 {% extends 'base.html' %}
-{% block title %}Import Data - GST Online Seller{% endblock %}
+{% block title %}Import Marketplace Data - GST Online Seller{% endblock %}
 {% block content %}
-<h2 class="mb-4">Import Data</h2>
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <div>
+        <h2 class="mb-1"><i class="fas fa-file-import text-primary me-2"></i>Import Marketplace Data</h2>
+        <div class="text-muted small">
+            Directly parse, validate, and normalize sales reports from 15 supported marketplace integrations.
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('imports.history') }}" class="btn btn-outline-secondary">
+            <i class="fas fa-history me-1"></i>Import History
+        </a>
+    </div>
+</div>
 
-<div class="row g-4">
-    {% set platforms = ['Amazon', 'Flipkart', 'Meesho', 'Myntra'] %}
+<!-- 15 Production Marketplace Cards Grid -->
+<div class="row g-3 mb-4">
     {% for p in platforms %}
-    <div class="col-md-3">
-        <div class="card shadow h-100 text-center">
-            <div class="card-body">
-                <i class="fas fa-shopping-cart fa-3x mb-3 text-primary"></i>
-                <h5 class="card-title">{{ p }}</h5>
-                <p class="text-muted small">Supports Excel/CSV</p>
-                <button class="btn btn-outline-primary btn-sm mt-2 w-100" onclick="showImportModal('{{ p }}')">Upload {{ p }} Data</button>
+    <div class="col-xl-3 col-lg-4 col-md-6 col-sm-12">
+        <div class="card shadow-sm h-100 border-0 text-center transition-card">
+            <div class="card-body d-flex flex-column justify-content-between p-3">
+                <div>
+                    <div class="mb-2">
+                        {% if 'amazon' in p.name|lower %}
+                        <i class="fab fa-amazon fa-3x text-warning"></i>
+                        {% elif 'flipkart' in p.name|lower %}
+                        <i class="fas fa-shopping-bag fa-3x text-primary"></i>
+                        {% elif 'meesho' in p.name|lower %}
+                        <i class="fas fa-store fa-3x text-danger"></i>
+                        {% elif 'myntra' in p.name|lower %}
+                        <i class="fas fa-tshirt fa-3x text-info"></i>
+                        {% elif 'gstr1' in p.name|lower or 'govt' in p.name|lower %}
+                        <i class="fas fa-landmark fa-3x text-success"></i>
+                        {% else %}
+                        <i class="fas fa-shopping-cart fa-3x text-secondary"></i>
+                        {% endif %}
+                    </div>
+                    <h5 class="card-title mb-1 fw-bold">{{ p.name }}</h5>
+                    <div class="mb-2">
+                        {% if p.status == 'PRODUCTION' or p.format_documented %}
+                        <span class="badge bg-success-subtle text-success border border-success">
+                            <i class="fas fa-check-circle me-1"></i>PRODUCTION
+                        </span>
+                        {% else %}
+                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning">
+                            <i class="fas fa-tools me-1"></i>FALLBACK / BETA
+                        </span>
+                        {% endif %}
+                    </div>
+                    <p class="text-muted small mb-2">
+                        Formats:
+                        {% for fmt in p.supported_files %}
+                        <span class="badge bg-light text-dark border">{{ fmt }}</span>
+                        {% endfor %}
+                    </p>
+                    {% if p.mapped_headers_count %}
+                    <div class="small text-muted mb-2">
+                        <i class="fas fa-columns me-1"></i>{{ p.mapped_headers_count }} mapped columns
+                    </div>
+                    {% endif %}
+                </div>
+                <div>
+                    <button class="btn btn-outline-primary btn-sm w-100 mt-2" onclick="openImportModal('{{ p.name }}', '{{ p.status }}', '{{ p.instructions|default('')|replace('\'', '\\\'')|replace('\"', '&quot;') }}', '{{ p.supported_files|join(', ') }}')">
+                        <i class="fas fa-cloud-upload-alt me-1"></i>Upload {{ p.name }} Data
+                    </button>
+                </div>
             </div>
         </div>
     </div>
     {% endfor %}
 </div>
 
-<!-- Import Modal -->
-<div class="modal fade" id="importModal" tabindex="-1">
+<!-- Universal Upload & Staging Modal -->
+<div class="modal fade" id="importModal" tabindex="-1" aria-labelledby="importModalTitle" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Upload <span id="platformName"></span> Data</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="upload-zone p-5 border border-primary border-2 border-dashed text-center rounded bg-light mb-3" id="drop-zone">
-                    <i class="fas fa-cloud-upload-alt fa-3x text-primary mb-3"></i>
-                    <h5>Drag and drop file here or click to select</h5>
-                    <input type="file" id="fileInput" class="d-none" accept=".csv, .xlsx, .xls">
+            <form id="importUploadForm" method="POST" action="{{ url_for('imports.upload') }}" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="platform" id="selectedPlatform" value="Generic">
+                <input type="hidden" name="allow_duplicate_file" id="allowDuplicateFile" value="false">
+
+                <div class="modal-header">
+                    <h5 class="modal-title d-flex align-items-center" id="importModalTitle">
+                        Upload <span id="platformName" class="text-primary mx-1">Platform</span> Data
+                        <span id="platformStatusBadge" class="ms-2"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="progress d-none" id="uploadProgress">
-                    <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%"></div>
+
+                <div class="modal-body">
+                    <!-- Platform Specific Instructions / Guidance -->
+                    <div id="platformInstructionsBox" class="alert alert-info py-2 small mb-3 d-none" role="alert">
+                        <div class="d-flex">
+                            <i class="fas fa-info-circle fa-lg me-2 mt-1"></i>
+                            <div>
+                                <strong class="d-block">Upload Instructions:</strong>
+                                <span id="platformInstructionsText"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Drag & Drop Upload Zone -->
+                    <div class="upload-zone p-4 border border-primary border-2 border-dashed text-center rounded bg-light mb-3" id="drop-zone" style="cursor: pointer;">
+                        <i class="fas fa-cloud-upload-alt fa-3x text-primary mb-2"></i>
+                        <h6 class="mb-1" id="dropZonePrompt">Drag and drop report file here, or click to browse</h6>
+                        <div class="small text-muted" id="selectedFileNameDisplay">Accepted formats: <span id="acceptedFormats">Excel (.xlsx, .xls) and CSV (.csv)</span></div>
+                        <input type="file" name="file" id="fileInput" class="d-none" accept=".csv, .xlsx, .xls" required>
+                    </div>
+
+                    <!-- Stage for Preview Checkbox Switch (Phases 5E-11 to 5E-13) -->
+                    <div class="card border-primary-subtle bg-light mb-3">
+                        <div class="card-body py-2 px-3">
+                            <div class="form-check form-switch mb-1">
+                                <input class="form-check-input" type="checkbox" name="stage" value="true" id="stageModeCheckbox" checked>
+                                <label class="form-check-label fw-bold text-primary" for="stageModeCheckbox">
+                                    <i class="fas fa-eye me-1"></i>Stage for Preview before Confirm (stage=true)
+                                </label>
+                            </div>
+                            <div class="small text-muted">
+                                <strong>Recommended:</strong> Staged imports isolate candidate transactions in a preview workspace. You can inspect tax totals, section categorization (B2B, B2C, CDNR), and validation issues before confirming into statutory return data.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Client-Side Real-Time Progress Bar Container -->
+                    <div id="uploadProgressContainer" class="d-none mb-3">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <span class="small fw-semibold text-primary" id="progressStatusText">
+                                <i class="fas fa-spinner fa-spin me-1"></i>Uploading file to server...
+                            </span>
+                            <span class="small fw-bold text-primary" id="progressPercentText">0%</span>
+                        </div>
+                        <div class="progress" style="height: 14px;">
+                            <div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <div class="d-flex justify-content-between text-muted small mt-1">
+                            <span id="processedRowsCounter"><i class="fas fa-database me-1"></i>Rows processed: 0</span>
+                            <span id="totalRowsCounter">Total rows: --</span>
+                        </div>
+                    </div>
+
+                    <!-- Dynamic Error / Alert Box -->
+                    <div id="uploadAlert" class="alert d-none py-2 small" role="alert"></div>
                 </div>
-                <div id="previewArea" class="d-none mt-4">
-                    <h6>Preview</h6>
-                    <!-- Preview content goes here -->
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="cancelModalBtn">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="startUploadBtn">
+                        <i class="fas fa-cloud-upload-alt me-1"></i>Upload & Process
+                    </button>
                 </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary d-none" id="confirmImportBtn">Confirm Import</button>
-            </div>
+            </form>
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let pollingInterval = null;
+
+function openImportModal(platformName, status, instructions, formats) {
+    $('#selectedPlatform').val(platformName);
+    $('#platformName').text(platformName);
+    
+    // Status badge
+    if (status === 'PRODUCTION') {
+        $('#platformStatusBadge').html('<span class="badge bg-success"><i class="fas fa-check-circle me-1"></i>PRODUCTION READY</span>');
+    } else {
+        $('#platformStatusBadge').html('<span class="badge bg-warning text-dark"><i class="fas fa-tools me-1"></i>FALLBACK / BETA</span>');
+    }
+
+    // Instructions
+    if (instructions && instructions.trim() !== '') {
+        $('#platformInstructionsText').text(instructions);
+        $('#platformInstructionsBox').removeClass('d-none');
+    } else {
+        $('#platformInstructionsBox').addClass('d-none');
+    }
+
+    if (formats) {
+        $('#acceptedFormats').text(formats);
+    }
+
+    // Reset form & progress state
+    $('#fileInput').val('');
+    $('#selectedFileNameDisplay').text('Accepted formats: ' + (formats || '.xlsx, .xls, .csv'));
+    $('#uploadProgressContainer').addClass('d-none');
+    $('#uploadAlert').addClass('d-none').removeClass('alert-danger alert-success');
+    $('#startUploadBtn').prop('disabled', false).html('<i class="fas fa-cloud-upload-alt me-1"></i>Upload & Process');
+
+    $('#importModal').modal('show');
+}
+
+$(document).ready(function() {
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('fileInput');
+
+    if (dropZone && fileInput) {
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('bg-primary-subtle');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('bg-primary-subtle');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('bg-primary-subtle');
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                updateFileSelection();
+            }
+        });
+
+        fileInput.addEventListener('change', updateFileSelection);
+    }
+
+    function updateFileSelection() {
+        if (fileInput.files && fileInput.files.length > 0) {
+            const file = fileInput.files[0];
+            const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+            $('#selectedFileNameDisplay').html('<strong>Selected:</strong> ' + file.name + ' (' + sizeMb + ' MB)');
+            $('#uploadAlert').addClass('d-none');
+        }
+    }
+
+    // Client-side progress bar polling wiring
+    $('#importUploadForm').on('submit', function(e) {
+        if (!fileInput.files || fileInput.files.length === 0) {
+            e.preventDefault();
+            $('#uploadAlert').removeClass('d-none alert-success').addClass('alert-danger')
+                .html('<i class="fas fa-exclamation-triangle me-1"></i>Please select a file to import.');
+            return;
+        }
+
+        e.preventDefault();
+        const form = this;
+        const formData = new FormData(form);
+
+        // Show progress UI
+        $('#uploadProgressContainer').removeClass('d-none');
+        $('#uploadProgressBar').css('width', '15%').attr('aria-valuenow', 15).removeClass('bg-danger bg-success bg-info').addClass('bg-primary');
+        $('#progressPercentText').text('15%');
+        $('#progressStatusText').html('<i class="fas fa-spinner fa-spin me-1"></i>Uploading file to server...');
+        $('#uploadAlert').addClass('d-none');
+        $('#startUploadBtn').prop('disabled', true).html('<i class="fas fa-spinner fa-spin me-1"></i>Processing...');
+        $('#cancelModalBtn').prop('disabled', true);
+
+        fetch(form.action, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(async response => {
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.message || (data.errors && data.errors[0]) || 'Import failed');
+            }
+            return data;
+        })
+        .then(result => {
+            if (result.success && result.import_id) {
+                // Poll progress endpoint
+                startProgressPolling(result.import_id, result.redirect_url, result.status);
+            } else if (result.redirect_url) {
+                window.location.href = result.redirect_url;
+            } else {
+                window.location.href = "{{ url_for('imports.history') }}";
+            }
+        })
+        .catch(err => {
+            clearInterval(pollingInterval);
+            $('#uploadProgressBar').css('width', '100%').removeClass('bg-primary bg-success bg-info').addClass('bg-danger');
+            $('#progressPercentText').text('Error');
+            $('#progressStatusText').html('<i class="fas fa-times-circle text-danger me-1"></i>Processing error');
+            $('#uploadAlert').removeClass('d-none alert-success').addClass('alert-danger')
+                .html('<i class="fas fa-exclamation-triangle me-1"></i>' + err.message);
+            $('#startUploadBtn').prop('disabled', false).html('<i class="fas fa-cloud-upload-alt me-1"></i>Upload & Process');
+            $('#cancelModalBtn').prop('disabled', false);
+        });
+    });
+
+    function startProgressPolling(importId, redirectUrl, initialStatus) {
+        if (initialStatus === 'STAGED' || initialStatus === 'COMPLETED') {
+            $('#uploadProgressBar').css('width', '100%').removeClass('bg-primary bg-danger').addClass(initialStatus === 'STAGED' ? 'bg-info' : 'bg-success');
+            $('#progressPercentText').text('100%');
+            $('#progressStatusText').html('<i class="fas fa-check-circle me-1"></i>Complete! Redirecting...');
+            setTimeout(() => {
+                window.location.href = redirectUrl || (initialStatus === 'STAGED' ? '/import/' + importId + '/preview' : "{{ url_for('imports.history') }}");
+            }, 600);
+            return;
+        }
+
+        let pollCount = 0;
+        pollingInterval = setInterval(() => {
+            pollCount++;
+            fetch('/api/imports/' + importId + '/progress', {
+                headers: { 'Accept': 'application/json' }
+            })
+            .then(res => res.json())
+            .then(res => {
+                const info = res.data || res;
+                if (!info) return;
+
+                const pct = info.progress_pct != null ? info.progress_pct : Math.min(20 + pollCount * 10, 95);
+                $('#uploadProgressBar').css('width', pct + '%').attr('aria-valuenow', pct);
+                $('#progressPercentText').text(pct + '%');
+
+                if (info.total_rows) {
+                    $('#totalRowsCounter').text('Total rows: ' + info.total_rows);
+                }
+                if (info.processed_rows != null) {
+                    $('#processedRowsCounter').html('<i class="fas fa-database me-1"></i>Rows processed: ' + info.processed_rows);
+                }
+
+                $('#progressStatusText').html('<i class="fas fa-spinner fa-spin me-1"></i>Status: ' + (info.status || 'PROCESSING') + ' (' + pct + '%)');
+
+                if (info.status === 'STAGED') {
+                    clearInterval(pollingInterval);
+                    $('#uploadProgressBar').css('width', '100%').removeClass('bg-primary').addClass('bg-info');
+                    $('#progressPercentText').text('100%');
+                    $('#progressStatusText').html('<i class="fas fa-check-circle text-info me-1"></i>Staged for preview! Redirecting...');
+                    setTimeout(() => {
+                        window.location.href = redirectUrl || '/import/' + importId + '/preview';
+                    }, 600);
+                } else if (info.status === 'COMPLETED' || info.status === 'PARTIAL') {
+                    clearInterval(pollingInterval);
+                    $('#uploadProgressBar').css('width', '100%').removeClass('bg-primary').addClass('bg-success');
+                    $('#progressPercentText').text('100%');
+                    $('#progressStatusText').html('<i class="fas fa-check-circle text-success me-1"></i>Import complete! Redirecting...');
+                    setTimeout(() => {
+                        window.location.href = redirectUrl || "{{ url_for('imports.history') }}";
+                    }, 600);
+                } else if (info.status === 'FAILED' || info.status === 'CANCELLED') {
+                    clearInterval(pollingInterval);
+                    $('#uploadProgressBar').css('width', '100%').removeClass('bg-primary').addClass('bg-danger');
+                    $('#progressPercentText').text('Failed');
+                    $('#progressStatusText').html('<i class="fas fa-times-circle text-danger me-1"></i>Import ' + info.status);
+                    $('#uploadAlert').removeClass('d-none alert-success').addClass('alert-danger')
+                        .html('<i class="fas fa-exclamation-triangle me-1"></i>' + (info.error_message || 'Import processing failed.'));
+                    $('#startUploadBtn').prop('disabled', false).html('<i class="fas fa-cloud-upload-alt me-1"></i>Retry Upload');
+                    $('#cancelModalBtn').prop('disabled', false);
+                }
+            })
+            .catch(() => {
+                // If temporary network poll glitch, keep polling up to 60 iterations (30s)
+                if (pollCount > 60) {
+                    clearInterval(pollingInterval);
+                    window.location.href = redirectUrl || "{{ url_for('imports.history') }}";
+                }
+            });
+        }, 500);
+    }
+});
+</script>
 {% endblock %}

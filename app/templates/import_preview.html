@@ -3,26 +3,39 @@
 {% block content %}
 <div class="container-fluid px-0">
     <!-- Header Banner -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
         <div>
             <h2 class="mb-1"><i class="fas fa-file-invoice text-primary me-2"></i>Import Preview</h2>
-            <div class="text-muted small">
-                <strong>File:</strong> {{ preview.file_name }} &bull;
-                <strong>Platform:</strong> <span class="badge bg-secondary">{{ preview.platform_name }}</span> &bull;
-                <strong>Period:</strong> <span class="badge bg-info text-dark">{{ preview.return_period }}</span> &bull;
-                <strong>Status:</strong>
-                {% if preview.processing_status == 'STAGED' %}
-                <span class="badge bg-primary fs-6">{{ preview.processing_status }}</span>
-                {% elif preview.processing_status in ('COMPLETED', 'PARTIAL') %}
-                <span class="badge bg-success fs-6">{{ preview.processing_status }}</span>
-                {% elif preview.processing_status == 'CANCELLED' %}
-                <span class="badge bg-warning text-dark fs-6">{{ preview.processing_status }}</span>
-                {% else %}
-                <span class="badge bg-danger fs-6">{{ preview.processing_status }}</span>
-                {% endif %}
+            <div class="text-muted small d-flex align-items-center gap-2 flex-wrap">
+                <span><strong>File:</strong> {{ preview.file_name }}</span> &bull;
+                <span><strong>Platform:</strong> <span class="badge bg-secondary">{{ preview.platform_name }}</span></span> &bull;
+                <span><strong>Period:</strong> <span class="badge bg-info text-dark">{{ preview.return_period }}</span></span> &bull;
+                <span><strong>Status:</strong>
+                    {% if preview.processing_status == 'COMPLETED' %}
+                    <span class="badge bg-success"><i class="fas fa-check-circle me-1"></i>COMPLETED</span>
+                    {% elif preview.processing_status == 'STAGED' %}
+                    <span class="badge bg-primary"><i class="fas fa-eye me-1"></i>STAGED</span>
+                    {% elif preview.processing_status == 'PROCESSING' %}
+                    <span class="badge bg-info text-dark"><i class="fas fa-spinner fa-spin me-1"></i>PROCESSING</span>
+                    {% elif preview.processing_status == 'FAILED' %}
+                    <span class="badge bg-danger"><i class="fas fa-times-circle me-1"></i>FAILED</span>
+                    {% elif preview.processing_status == 'CANCELLED' %}
+                    <span class="badge bg-warning text-dark"><i class="fas fa-ban me-1"></i>CANCELLED</span>
+                    {% elif preview.processing_status == 'SUPERSEDED' %}
+                    <span class="badge bg-dark"><i class="fas fa-history me-1"></i>SUPERSEDED</span>
+                    {% elif preview.processing_status == 'PARTIAL' %}
+                    <span class="badge bg-warning text-dark"><i class="fas fa-exclamation-triangle me-1"></i>PARTIAL</span>
+                    {% else %}
+                    <span class="badge bg-secondary">{{ preview.processing_status }}</span>
+                    {% endif %}
+                </span> &bull;
+                <span>
+                    {% set pct = preview.progress_pct if preview.progress_pct is not none else (100 if preview.processing_status in ('COMPLETED', 'STAGED', 'CANCELLED', 'SUPERSEDED') else 0) %}
+                    <strong>Progress:</strong> <span class="badge bg-light text-dark border">{{ pct }}%</span>
+                </span>
             </div>
         </div>
-        <div class="d-flex align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
             <a href="{{ url_for('imports.history') }}" class="btn btn-outline-secondary">
                 <i class="fas fa-arrow-left me-1"></i>Import History
             </a>
@@ -37,6 +50,13 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-outline-danger" onclick="return confirm('Are you sure you want to discard this staged import?');">
                     <i class="fas fa-times-circle me-1"></i>Cancel Import
+                </button>
+            </form>
+            {% elif preview.processing_status in ('FAILED', 'CANCELLED', 'PARTIAL') %}
+            <form method="POST" action="{{ url_for('imports.retry_view', id=preview.import_id) }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-warning">
+                    <i class="fas fa-redo me-1"></i>Retry Failed Import
                 </button>
             </form>
             {% endif %}

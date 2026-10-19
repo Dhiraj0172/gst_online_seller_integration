@@ -10,11 +10,12 @@ Guarantees:
 - Decimal-safe arithmetic
 - Clear differentiation between BLOCKING errors and NON-BLOCKING warnings
 """
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from app.extensions import db
-from app.models import GSTProfile, ImportHistory, RawImport, Transaction
+from app.models import AuditLog, GSTProfile, ImportHistory, RawImport, ReconciliationRecord, Transaction
 from app.services.gstr1_generator import load_transactions
 from app.utils.query import tenant_query
 from app.utils.state_codes import STATE_CODES
@@ -200,6 +201,7 @@ def check_import_counts(profile_id: int, return_period: str) -> CheckResult:
         tenant_query(Transaction, pid)
         .filter(
             Transaction.import_history_id.in_([imp.id for imp in imports]),
+            Transaction.is_staged.is_(False),
         )
         .count()
     )
@@ -948,3 +950,289 @@ def run_full_reconciliation(profile_id: int, return_period: str) -> Reconciliati
     report.add_check(check_state_totals(pid, rp))
 
     return report
+
+
+def get_source_to_normalized_counts(profile_id: int, return_period: str) -> Dict[str, Any]:
+    """Calculate and mathematically verify row conservation for a profile and return period.
+    
+    Proves identity: Total Source Input == Accepted + Rejected + Duplicate/Skipped.
+    Also tracks active, staged, and soft-deleted transaction states in the database.
+    """
+    pid = int(profile_id)
+    rp = str(return_period).strip()
+
+    imports = (
+        tenant_query(ImportHistory, pid)
+        .filter_by(return_period=rp)
+        .all()
+    )
+
+    total_input = sum((imp.total_rows or 0) for imp in imports)
+    accepted = sum(((imp.success_rows or 0) + (imp.warning_rows or 0)) for imp in imports)
+    rejected = sum((imp.error_rows or 0) for imp in imports)
+    duplicates = sum((imp.skipped_rows or 0) for imp in imports)
+
+    active_tx_count = (
+        tenant_query(Transaction, pid)
+        .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
+        .filter(
+            ImportHistory.return_period == rp,
+            Transaction.is_deleted == False,
+            Transaction.is_staged == False,
+            ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']),
+        )
+        .count()
+    )
+
+    staged_tx_count = (
+        tenant_query(Transaction, pid)
+        .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
+        .filter(
+            ImportHistory.return_period == rp,
+            Transaction.is_deleted == False,
+            Transaction.is_staged == True,
+        )
+        .count()
+    )
+
+    deleted_tx_count = (
+        tenant_query(Transaction, pid)
+        .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
+        .filter(
+            ImportHistory.return_period == rp,
+            Transaction.is_deleted == True,
+        )
+        .count()
+    )
+
+    # Invariant: raw source input equals accepted + rejected + duplicates
+    is_conserved = (total_input == (accepted + rejected + duplicates))
+    drift = total_input - (accepted + rejected + duplicates)
+
+    return {
+        "return_period": rp,
+        "total_source_input": total_input,
+        "accepted_rows": accepted,
+        "rejected_rows": rejected,
+        "duplicate_rows": duplicates,
+        "active_transactions": active_tx_count,
+        "staged_transactions": staged_tx_count,
+        "deleted_transactions": deleted_tx_count,
+        "is_conserved": is_conserved,
+        "drift": drift,
+        "conservation_formula": "total_source_input == accepted_rows + rejected_rows + duplicate_rows",
+    }
+
+
+def get_reconciliation_summary(profile_id: int, return_period: str) -> Dict[str, Any]:
+    """Provide authoritative reconciliation summary combining check results, buckets, and conservation proof.
+    
+    Reconciliation Buckets:
+    - MATCHED: Active transactions with zero discrepancy
+    - MATCHED_WITH_VARIANCE: Transactions with non-blocking variance (e.g. tax rounding)
+    - UNMATCHED_SOURCE: Rejected raw imports not converted to transactions
+    - UNMATCHED_NORMALIZED: Active transactions with missing master data / partner GSTIN
+    - AMBIGUOUS: Transactions with duplicate fingerprints
+    - EXCLUDED_BY_RULE: Transactions excluded from specific tables by statutory rules
+    """
+    pid = int(profile_id)
+    rp = str(return_period).strip()
+
+    report = run_full_reconciliation(pid, rp)
+    conservation = get_source_to_normalized_counts(pid, rp)
+
+    active_txs = _get_active_transactions(pid, rp)
+    from app.services.validation_service import get_validation_issues
+    issues = get_validation_issues(pid, rp)
+    issue_tx_ids = {i.get("transaction_id") for i in issues if i.get("transaction_id")}
+
+    variance_issues = [i for i in issues if any(k in str(i.get("code", "")).upper() for k in ("MISMATCH", "ARITHMETIC", "VARIANCE"))]
+    unmatched_norm_issues = [i for i in issues if i.get("code") in ("UNCLASSIFIED_SUPPLY", "MISSING_B2B_GSTIN")]
+    ambiguous_issues = [i for i in issues if i.get("code") == "DUPLICATE_TRANSACTION"]
+    excluded_issues = [i for i in issues if i.get("code") == "MISSING_HSN"]
+
+    matched_count = max(0, len(active_txs) - len(issue_tx_ids))
+    variance_count = len(variance_issues)
+    unmatched_norm_count = len(unmatched_norm_issues)
+    ambiguous_count = len(ambiguous_issues)
+    excluded_count = len(excluded_issues)
+
+    bucket_summary = {
+        "MATCHED": matched_count,
+        "MATCHED_WITH_VARIANCE": variance_count,
+        "UNMATCHED_SOURCE": conservation["rejected_rows"],
+        "UNMATCHED_NORMALIZED": unmatched_norm_count,
+        "AMBIGUOUS": ambiguous_count,
+        "EXCLUDED_BY_RULE": excluded_count,
+    }
+
+    # Retrieve persistent resolution records if available
+    records = tenant_query(ReconciliationRecord, pid).filter_by(return_period=rp).all()
+    exceptions_list = [r.to_dict() for r in records]
+
+    # Incorporate stored reconciliation records if present
+    record_bucket_counts = {}
+    for r in records:
+        record_bucket_counts[r.bucket] = record_bucket_counts.get(r.bucket, 0) + 1
+    for b, count in record_bucket_counts.items():
+        bucket_summary[b] = max(bucket_summary.get(b, 0), count)
+
+    bucket_descriptions = {
+        "MATCHED": "Active transactions with complete data integrity and matching tax",
+        "MATCHED_WITH_VARIANCE": "Transactions matching document keys with minor acceptable variance",
+        "UNMATCHED_SOURCE": "Source import rows rejected and not present in transactions",
+        "UNMATCHED_NORMALIZED": "Normalized transactions with missing master data or classification",
+        "AMBIGUOUS": "Transactions with potential duplicates or multiple matching candidates",
+        "EXCLUDED_BY_RULE": "Transactions legitimately excluded from specific return sections by law",
+    }
+    buckets = {
+        k: {"count": v, "description": bucket_descriptions.get(k, "")}
+        for k, v in bucket_summary.items()
+    }
+
+    return {
+        "profile_id": pid,
+        "return_period": rp,
+        "status": report.status,
+        "is_generation_blocked": report.is_generation_blocked,
+        "critical_failures": report.critical_failures,
+        "warnings": report.warnings,
+        "blocking_reasons": report.blocking_reasons,
+        "conservation_proof": conservation,
+        "row_conservation": conservation,
+        "bucket_summary": bucket_summary,
+        "buckets": buckets,
+        "checks": [c.to_dict() for c in report.checks],
+        "exceptions": exceptions_list,
+        "exception_count": len(exceptions_list),
+        "total_exceptions": max(len(exceptions_list), len(issues)),
+    }
+
+
+def export_reconciliation_csv(profile_id: int, return_period: str) -> str:
+    """Generate structured multi-section Reconciliation & Exception CSV export."""
+    import csv
+    import io
+    from app.utils.csv_utils import sanitize_csv_value
+
+    summary = get_reconciliation_summary(profile_id, return_period)
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Section 1: Executive Metadata Header
+    writer.writerow(["=== GST RECONCILIATION & EXCEPTION REPORT ==="])
+    writer.writerow(["Profile ID", summary["profile_id"]])
+    writer.writerow(["Return Period", summary["return_period"]])
+    writer.writerow(["Overall Status", summary["status"]])
+    writer.writerow(["Generation Blocked", "YES" if summary["is_generation_blocked"] else "NO"])
+    writer.writerow(["Critical Errors", summary["critical_failures"]])
+    writer.writerow(["Warnings", summary["warnings"]])
+    if summary["blocking_reasons"]:
+        writer.writerow(["Blocking Reasons", sanitize_csv_value("; ".join(summary["blocking_reasons"]))])
+    writer.writerow([])
+
+    # Section 2: Source-to-Normalized Row Conservation Proof
+    writer.writerow(["=== SOURCE-TO-NORMALIZED ROW CONSERVATION ==="])
+    writer.writerow(["Metric", "Count", "Notes"])
+    cp = summary["conservation_proof"]
+    writer.writerow(["Total Source Input", cp["total_source_input"], "Raw input lines across all uploaded files"])
+    writer.writerow(["Accepted Rows", cp["accepted_rows"], "Normalized into active/staged transactions"])
+    writer.writerow(["Rejected Rows", cp["rejected_rows"], "Failed validation or format requirements"])
+    writer.writerow(["Duplicate / Skipped", cp["duplicate_rows"], "Skipped via duplicate fingerprinting"])
+    writer.writerow(["Active Transactions", cp["active_transactions"], "Confirmed and visible to GST returns"])
+    writer.writerow(["Staged Transactions", cp["staged_transactions"], "Pending preview confirmation"])
+    writer.writerow(["Soft Deleted Transactions", cp["deleted_transactions"], "Removed by user"])
+    writer.writerow(["Conservation Status", "VERIFIED" if cp["is_conserved"] else "MISMATCH", cp["conservation_formula"]])
+    writer.writerow(["Conservation Drift", cp["drift"], "Must be 0 in complete reconciliation"])
+    writer.writerow([])
+
+    # Section 3: Reconciliation Buckets Summary
+    writer.writerow(["=== RECONCILIATION BUCKET SUMMARY ==="])
+    writer.writerow(["Bucket", "Count", "Description"])
+    bucket_descriptions = {
+        "MATCHED": "Active transactions with complete data integrity and matching tax",
+        "MATCHED_WITH_VARIANCE": "Transactions matching document keys with minor acceptable variance",
+        "UNMATCHED_SOURCE": "Source import rows rejected and not present in transactions",
+        "UNMATCHED_NORMALIZED": "Normalized transactions missing customer GSTIN or classification",
+        "AMBIGUOUS": "Transactions with duplicate fingerprints requiring resolution",
+        "EXCLUDED_BY_RULE": "Transactions excluded from specific return sections by law",
+    }
+    for b_name, count in summary["bucket_summary"].items():
+        writer.writerow([b_name, count, bucket_descriptions.get(b_name, "")])
+    writer.writerow([])
+
+    # Section 4: Detailed Integrity Checks Breakdown
+    writer.writerow(["=== INTEGRITY CHECKS BREAKDOWN ==="])
+    writer.writerow(["Check Name", "Status", "Severity", "Messages"])
+    for chk in summary["checks"]:
+        writer.writerow([
+            chk["check_name"],
+            "PASS" if chk["passed"] else "FAIL",
+            chk["severity"],
+            sanitize_csv_value("; ".join(chk.get("messages", []))),
+        ])
+    writer.writerow([])
+
+    # Section 5: Exception Resolution Log
+    writer.writerow(["=== EXCEPTION RESOLUTION LOG ==="])
+    writer.writerow(["ID", "Bucket", "Severity", "Category", "Code", "Status", "Resolution Note", "Resolved By", "Resolved At"])
+    for exc in summary.get("exceptions", []):
+        writer.writerow([
+            exc.get("id"),
+            exc.get("bucket"),
+            exc.get("severity"),
+            exc.get("category"),
+            exc.get("code"),
+            exc.get("resolution_status"),
+            sanitize_csv_value(exc.get("resolution_note") or ""),
+            exc.get("resolved_by") or "",
+            exc.get("resolved_at") or "",
+        ])
+
+    return output.getvalue()
+
+
+def resolve_reconciliation_exception(
+    record_id: int,
+    profile_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    resolution_status: str = 'RESOLVED',
+    resolution_note: str = '',
+    **kwargs
+) -> Optional[ReconciliationRecord]:
+    """Apply audited resolution note to a ReconciliationRecord."""
+    rec = None
+    if profile_id is not None:
+        rec = tenant_query(ReconciliationRecord, int(profile_id)).filter_by(id=int(record_id)).first()
+    else:
+        rec = db.session.get(ReconciliationRecord, int(record_id))
+
+    if not rec:
+        return None
+
+    actual_user_id = user_id or kwargs.get('resolved_by_id') or kwargs.get('resolved_by') or rec.resolved_by or 1
+    actual_note = resolution_note or kwargs.get('note') or ''
+    old_status = rec.resolution_status
+    clean_status = str(resolution_status).strip().upper()
+    if clean_status not in ('OPEN', 'RESOLVED', 'IGNORED', 'OVERRIDDEN'):
+        clean_status = 'RESOLVED'
+
+    rec.resolution_status = clean_status
+    rec.resolution_note = str(actual_note).strip()
+    rec.resolved_by = int(actual_user_id)
+    rec.resolved_at = datetime.utcnow()
+
+    audit = AuditLog(
+        user_id=int(actual_user_id),
+        action='RESOLVE_EXCEPTION',
+        entity_type='ReconciliationRecord',
+        entity_id=rec.id,
+        field_name='resolution_status',
+        old_value=old_status,
+        new_value=clean_status,
+        reason=(rec.resolution_note or '')[:255],
+    )
+    db.session.add(audit)
+    db.session.commit()
+    return rec
+

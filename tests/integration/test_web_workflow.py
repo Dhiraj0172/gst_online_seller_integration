@@ -20,7 +20,7 @@ def test_full_web_application_workflow(app, db, client):
     suffix = uuid.uuid4().hex[:6]
     email = f'seller_ent_{suffix}@example.com'
     password = 'SecurePassword123!'
-    gstin = f'27AAB{suffix[:4].upper()}1ZM'
+    gstin = f'27AABCS{suffix[:4].upper().replace("A","1").replace("B","2").replace("C","3").replace("D","4").replace("E","5").replace("F","6")}A1Z5'
 
     try:
         # 1. Register

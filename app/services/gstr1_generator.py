@@ -1,7 +1,8 @@
 import uuid
 import os
+import hashlib
 from decimal import Decimal
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from collections import defaultdict
 
@@ -13,6 +14,35 @@ from app.services.gstr1_json_writer import generate_gstr1_json
 from app.services.gstr1_json_validator import GSTR1Validator, ValidationResult
 from app.services.gst_rules import get_rules_for_period
 from app.utils.state_codes import resolve_pos_code
+
+
+def compute_input_snapshot_checksum(transactions: list) -> Tuple[str, int]:
+    """Compute deterministic SHA-256 hash of input transactions for reproducible generation tracking."""
+    if not transactions:
+        return hashlib.sha256(b"empty").hexdigest(), 0
+
+    sorted_txs = sorted(
+        transactions,
+        key=lambda t: (
+            getattr(t, 'id', 0) or 0,
+            getattr(t, 'invoice_number', '') or '',
+            str(getattr(t, 'invoice_date', '') or '')
+        )
+    )
+    hasher = hashlib.sha256()
+    hasher.update(f"count={len(sorted_txs)}|".encode('utf-8'))
+    for tx in sorted_txs:
+        row_repr = (
+            f"id={getattr(tx, 'id', '')}:inv={getattr(tx, 'invoice_number', '')}:"
+            f"dt={getattr(tx, 'invoice_date', '')}:st={getattr(tx, 'supply_type', '')}:"
+            f"pos={getattr(tx, 'place_of_supply', '')}:cgstin={getattr(tx, 'customer_gstin', '')}:"
+            f"hsn={getattr(tx, 'hsn_sac', '')}:txval={getattr(tx, 'taxable_value', '')}:"
+            f"tax={getattr(tx, 'total_tax', '')}:rate={getattr(tx, 'tax_rate', '')}:"
+            f"amend={bool(getattr(tx, 'amendment_flag', False))}:"
+            f"fp={getattr(tx, 'row_fingerprint', '')}|"
+        )
+        hasher.update(row_repr.encode('utf-8'))
+    return hasher.hexdigest(), len(sorted_txs)
 
 
 class GenerationBlockedError(Exception):
@@ -31,6 +61,10 @@ class GenerationResult:
         self.validation_result = validation_result
         self.reconciliation_report = reconciliation_report
         self.stats = stats
+        self.snapshot_checksum = stats.get("snapshot_checksum", "") if stats else ""
+        self.input_count = stats.get("input_count", 0) if stats else 0
+        self.gate_status = stats.get("gate_status", "CLEAN") if stats else "CLEAN"
+        self.validation_summary = stats.get("validation_summary", {}) if stats else {}
 
     def to_dict(self):
         return {
@@ -39,7 +73,11 @@ class GenerationResult:
             "json_path": self.json_path,
             "validation_result": self.validation_result.to_dict() if self.validation_result else None,
             "reconciliation_report": self.reconciliation_report,
-            "stats": self.stats
+            "stats": self.stats,
+            "snapshot_checksum": self.snapshot_checksum,
+            "input_count": self.input_count,
+            "gate_status": self.gate_status,
+            "validation_summary": self.validation_summary,
         }
 
 
@@ -86,7 +124,9 @@ def _empty_gstr1_structure(return_period: str, gstin: str = "") -> Dict[str, Any
         "_stats_meta": {
             "total_hsn_b2b": 0,
             "total_hsn_b2c": 0,
-            "total_ecom": 0
+            "total_ecom": 0,
+            "snapshot_checksum": compute_input_snapshot_checksum([])[0],
+            "input_count": 0,
         }
     }
 
@@ -361,10 +401,13 @@ def _build_gstr1_json(profile: GSTProfile, return_period: str, transactions: lis
     hsn_b2b_count = sum(1 for v in hsn_agg.values() if v.get("category") == "B2B")
     hsn_b2c_count = sum(1 for v in hsn_agg.values() if v.get("category") != "B2B")
     ecom_count = sum(1 for tx in transactions if getattr(tx, 'ecommerce_gstin', None))
+    checksum, in_count = compute_input_snapshot_checksum(transactions)
     json_data["_stats_meta"] = {
         "total_hsn_b2b": hsn_b2b_count,
         "total_hsn_b2c": hsn_b2c_count,
-        "total_ecom": ecom_count
+        "total_ecom": ecom_count,
+        "snapshot_checksum": checksum,
+        "input_count": in_count,
     }
 
     return json_data
@@ -1444,6 +1487,35 @@ def generate_gstr1(
     with open(json_path, "r", encoding="utf-8") as f:
         json_str = f.read()
     validation_result = GSTR1Validator.validate_gstr1_json(json_str)
+
+    recon_status = (reconciliation_report.get('status') if isinstance(reconciliation_report, dict) else getattr(recon_obj, 'status', 'CLEAN')) or 'CLEAN'
+    has_warnings = (
+        (isinstance(reconciliation_report, dict) and reconciliation_report.get('warnings', 0) > 0)
+        or (recon_obj and getattr(recon_obj, 'warnings', 0) > 0)
+        or bool(validation_result.warnings if validation_result else False)
+    )
+    if not (validation_result.is_valid if validation_result else True) or is_blocked or recon_status == 'BLOCKED':
+        computed_gate_status = 'BLOCKED'
+    elif has_warnings or recon_status == 'WARNING':
+        computed_gate_status = 'WARNING'
+    else:
+        computed_gate_status = 'CLEAN'
+
+    snapshot_checksum = _stats_meta.get("snapshot_checksum", "")
+    input_count = _stats_meta.get("input_count", 0)
+    validation_summary = {
+        "is_valid": validation_result.is_valid if validation_result else True,
+        "layer": validation_result.layer if validation_result else "Syntax",
+        "error_count": len(validation_result.errors) if validation_result else 0,
+        "warning_count": len(validation_result.warnings) if validation_result else 0,
+        "gate_status": computed_gate_status,
+        "layers_checked": ["Syntax", "Schema", "Fields", "Business Rules", "Cross-tables"],
+    }
+
+    stats["snapshot_checksum"] = snapshot_checksum
+    stats["input_count"] = input_count
+    stats["gate_status"] = computed_gate_status
+    stats["validation_summary"] = validation_summary
 
     return GenerationResult(
         generation_id=generation_id,

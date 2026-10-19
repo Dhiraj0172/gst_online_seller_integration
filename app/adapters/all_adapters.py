@@ -1290,3 +1290,49 @@ class RoposoAdapter(_GenericFilenameAdapter):
     FILENAME_TOKENS = ('roposo', 'clout')
 
 
+def get_adapter_readiness_matrix(include_internal: bool = False) -> List[Dict[str, Any]]:
+    """Return adapter readiness matrix & honesty gate metadata.
+
+    Explicitly distinguishes production-documented adapters (FORMAT_DOCUMENTED = True
+    with documented HEADER_MAP) from generic/fallback adapters (FORMAT_DOCUMENTED = False),
+    preventing undocumented platforms from masquerading as production-ready.
+    """
+    from .registry import _ADAPTER_REGISTRY
+
+    matrix = []
+    for platform_name, adapter_cls in _ADAPTER_REGISTRY.items():
+        if not include_internal and platform_name == 'Generic':
+            continue
+
+        is_documented = bool(getattr(adapter_cls, 'FORMAT_DOCUMENTED', False))
+        header_map = getattr(adapter_cls, 'HEADER_MAP', {}) or {}
+        has_header_map = bool(header_map)
+        is_catch_all = bool(getattr(adapter_cls, 'CATCH_ALL_DETECT', False))
+
+        status = 'PRODUCTION' if is_documented else 'FALLBACK'
+        file_types = list(getattr(adapter_cls, 'SUPPORTED_FILE_TYPES', []))
+
+        entry = {
+            'name': platform_name,
+            'platform': platform_name,
+            'platform_name': platform_name,
+            'format_documented': is_documented,
+            'has_header_map': has_header_map,
+            'mapped_headers_count': len(header_map),
+            'supported_file_types': file_types,
+            'file_formats': file_types,
+            'sheet_names': list(getattr(adapter_cls, 'SHEET_NAMES', [])),
+            'signature_headers': list(getattr(adapter_cls, 'SIGNATURE_HEADERS', [])),
+            'status': status,
+            'schema_version': '1.0',
+            'is_catch_all': is_catch_all,
+            'instructions': getattr(adapter_cls, 'INSTRUCTIONS', ''),
+            'template_url': getattr(adapter_cls, 'TEMPLATE_URL', ''),
+        }
+        matrix.append(entry)
+
+    matrix.sort(key=lambda x: (not x['format_documented'], x['name']))
+    return matrix
+
+
+

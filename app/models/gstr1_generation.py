@@ -39,8 +39,12 @@ class GSTR1Generation(db.Model):
     total_tax = db.Column(db.Numeric(15, 2), default=Decimal('0.00'))
     
     validation_passed = db.Column(db.Boolean, default=False)
-    validation_errors = db.Column(db.Text) # JSON string
-    reconciliation_report = db.Column(db.Text) # JSON string
+    snapshot_checksum = db.Column(db.String(64), index=True)  # Deterministic SHA-256 hash of input transactions
+    input_count = db.Column(db.Integer, default=0)  # Total transactions processed
+    gate_status = db.Column(db.String(20), default='CLEAN')  # CLEAN, WARNING, BLOCKED
+    validation_summary = db.Column(db.Text)  # JSON string of structured validation metadata
+    validation_errors = db.Column(db.Text)  # JSON string
+    reconciliation_report = db.Column(db.Text)  # JSON string
     
     schema_version = db.Column(db.String(20))
     rule_version = db.Column(db.String(20))

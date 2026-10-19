@@ -5,7 +5,8 @@ from flask_login import current_user, login_required
 from sqlalchemy import func
 
 from app.extensions import db
-from app.models import AuditLog, GSTProfile, ImportHistory, Transaction, GSTR1Generation, TCSReconciliation
+from app.models import AuditLog, GSTProfile, ImportHistory, Transaction, GSTR1Generation, TCSReconciliation, ReconciliationRecord
+from app.services.reconciliation_service import export_reconciliation_csv, get_reconciliation_summary, resolve_reconciliation_exception
 from app.services.validation_service import get_pre_filing_review, get_validation_issues
 from app.utils.csv_utils import sanitize_csv_value
 from app.utils.query import tenant_query
@@ -493,6 +494,56 @@ def validation_errors():
     )
 
 
+@statement_bp.route('/statement/export')
+@statement_bp.route('/statement/export/reconciliation')
+@login_required
+def export_reconciliation_report():
+    req_profile_id = request.args.get('profile_id')
+    if req_profile_id:
+        try:
+            target_profile = GSTProfile.query.filter_by(id=int(req_profile_id), user_id=current_user.id).first()
+            if not target_profile:
+                return Response("Profile not found or access denied", status=404)
+            profile_id = target_profile.id
+        except (ValueError, TypeError):
+            return Response("Invalid profile_id", status=400)
+    else:
+        profile_id = get_active_profile_id()
+
+    if not profile_id:
+        return Response("No active profile found", status=404)
+
+    return_period = get_active_return_period(profile_id)
+    if not return_period:
+        return Response("Return period required", status=400)
+
+    fmt = request.args.get('format', 'csv').lower()
+
+    # Mandatory AuditLog tracking
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="EXPORT",
+        entity_type="RECONCILIATION_REPORT",
+        entity_id=profile_id,
+        field_name="return_period",
+        new_value=return_period,
+        reason=f"User downloaded reconciliation report for period {return_period} format={fmt}",
+        ip_address=request.remote_addr,
+    )
+    db.session.add(audit)
+    db.session.commit()
+
+    if fmt == 'json':
+        return jsonify(get_reconciliation_summary(profile_id, return_period))
+
+    csv_data = export_reconciliation_csv(profile_id, return_period)
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-disposition": f"attachment; filename=reconciliation_report_{return_period}.csv"}
+    )
+
+
 @statement_bp.route('/statement/export/<section>')
 @login_required
 def export_section(section):
@@ -502,12 +553,18 @@ def export_section(section):
         return Response('', mimetype="text/csv", headers={"Content-disposition": f"attachment; filename={section}.csv"})
 
     sec = section.upper()
+    if sec in ('RECONCILIATION', 'RECON'):
+        return export_reconciliation_report()
+
     sec_norm = sec.replace('-', '_')
 
     query = (
-        tenant_query(Transaction, profile_id).filter_by(is_deleted=False)
+        tenant_query(Transaction, profile_id)
         .join(ImportHistory, Transaction.import_history_id == ImportHistory.id)
         .filter(
+            Transaction.is_deleted == False,
+            Transaction.is_staged == False,
+            ImportHistory.processing_status.in_(['COMPLETED', 'PARTIAL']),
             ImportHistory.return_period == return_period,
         )
     )
@@ -550,6 +607,20 @@ def export_section(section):
 
     txs = query.order_by(Transaction.id.asc()).all()
 
+    # Audit section export
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="EXPORT",
+        entity_type="STATEMENT_SECTION",
+        entity_id=profile_id,
+        field_name="section",
+        new_value=sec,
+        reason=f"Exported section {sec} for period {return_period}",
+        ip_address=request.remote_addr,
+    )
+    db.session.add(audit)
+    db.session.commit()
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['ID', 'Invoice Number', 'Date', 'Recipient GSTIN', 'Taxable Value', 'Total Tax', 'Invoice Value'])
@@ -569,6 +640,31 @@ def export_section(section):
         mimetype="text/csv",
         headers={"Content-disposition": f"attachment; filename={section}.csv"},
     )
+
+
+@statement_bp.route('/statement/reconciliation/resolve/<int:record_id>', methods=['POST'])
+@login_required
+def resolve_reconciliation_record(record_id):
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return jsonify({'error': 'No active profile'}), 404
+
+    data = request.get_json(silent=True) or request.form or {}
+    status = data.get('resolution_status') or data.get('status') or 'RESOLVED'
+    note = data.get('resolution_note') or data.get('note') or ''
+
+    record = resolve_reconciliation_exception(
+        record_id=record_id,
+        profile_id=profile_id,
+        user_id=current_user.id,
+        resolution_status=status,
+        resolution_note=note,
+    )
+    if not record:
+        return jsonify({'error': 'Reconciliation record not found'}), 404
+
+    return jsonify({'success': True, 'record': record.to_dict()})
+
 
 
 @statement_bp.route('/statement/audit-trail')

@@ -54,6 +54,11 @@ def _save_generation_record(profile, return_period, gen_result, recon_report, ex
     rule_ver = profile.financial_year or "2024-25"
     now = datetime.utcnow()
 
+    snapshot_checksum = stats.get('snapshot_checksum') or getattr(gen_result, 'snapshot_checksum', None)
+    input_count = stats.get('input_count', 0) if stats.get('input_count') is not None else getattr(gen_result, 'input_count', 0)
+    gate_status = stats.get('gate_status', 'CLEAN') or getattr(gen_result, 'gate_status', 'CLEAN')
+    val_summary = json.dumps(stats.get('validation_summary', {})) if stats.get('validation_summary') else json.dumps(getattr(gen_result, 'validation_summary', {}))
+
     gen = None
     if existing_gen_id:
         try:
@@ -86,6 +91,10 @@ def _save_generation_record(profile, return_period, gen_result, recon_report, ex
         gen.total_cess = stats.get('total_cess', 0)
         gen.total_tax = stats.get('total_tax', 0)
         gen.validation_passed = val_passed
+        gen.snapshot_checksum = snapshot_checksum
+        gen.input_count = input_count
+        gen.gate_status = gate_status
+        gen.validation_summary = val_summary
         gen.validation_errors = val_errors
         gen.reconciliation_report = recon_json
         gen.schema_version = schema_ver
@@ -119,6 +128,10 @@ def _save_generation_record(profile, return_period, gen_result, recon_report, ex
             total_cess=stats.get('total_cess', 0),
             total_tax=stats.get('total_tax', 0),
             validation_passed=val_passed,
+            snapshot_checksum=snapshot_checksum,
+            input_count=input_count,
+            gate_status=gate_status,
+            validation_summary=val_summary,
             validation_errors=val_errors,
             reconciliation_report=recon_json,
             schema_version=schema_ver,
@@ -209,6 +222,9 @@ def download_excel(id):
     if not profile:
         abort(404)
     gen = tenant_query(GSTR1Generation, profile.id).filter_by(id=id).first_or_404()
+    if gen.gate_status == 'BLOCKED' or gen.generation_status == 'BLOCKED':
+        flash("File download unavailable: GSTR-1 generation is blocked by reconciliation errors or validation failures.", "danger")
+        return redirect(url_for('generate.index'))
     filename = f"GSTR1_{profile.gstin}_{gen.return_period}.xlsx"
     log_generation_audit(
         user_id=current_user.id,
@@ -245,6 +261,9 @@ def download_json(id):
     if not profile:
         abort(404)
     gen = tenant_query(GSTR1Generation, profile.id).filter_by(id=id).first_or_404()
+    if gen.gate_status == 'BLOCKED' or gen.generation_status == 'BLOCKED':
+        flash("File download unavailable: GSTR-1 generation is blocked by reconciliation errors or validation failures.", "danger")
+        return redirect(url_for('generate.index'))
     filename = f"GSTR1_{profile.gstin}_{gen.return_period}.json"
     log_generation_audit(
         user_id=current_user.id,

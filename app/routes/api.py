@@ -704,6 +704,10 @@ def api_generate():
             total_cess=stats.get('total_cess', 0),
             total_tax=stats.get('total_tax', 0),
             validation_passed=val_passed,
+            snapshot_checksum=stats.get('snapshot_checksum'),
+            input_count=stats.get('input_count', 0),
+            gate_status=stats.get('gate_status', 'CLEAN'),
+            validation_summary=json.dumps(stats.get('validation_summary', {})),
             validation_errors=val_errors,
             reconciliation_report=recon_json,
             schema_version=schema_ver,
@@ -747,6 +751,10 @@ def api_generate():
             "total_tax": float(gen.total_tax or 0),
             "stats": stats,
             "validation_passed": gen.validation_passed,
+            "snapshot_checksum": gen.snapshot_checksum,
+            "input_count": gen.input_count,
+            "gate_status": gen.gate_status,
+            "validation_summary": json.loads(gen.validation_summary) if gen.validation_summary else {},
             "excel_download_url": f"/generate/download/excel/{gen.id}",
             "json_download_url": f"/generate/download/json/{gen.id}",
             "created_at": gen.created_at.isoformat() if gen.created_at else None
@@ -815,6 +823,9 @@ def api_list_generations():
             "total_cess": float(g.total_cess or 0),
             "total_tax": float(g.total_tax or 0),
             "validation_passed": g.validation_passed,
+            "snapshot_checksum": g.snapshot_checksum,
+            "input_count": g.input_count,
+            "gate_status": g.gate_status,
             "excel_download_url": f"/generate/download/excel/{g.id}",
             "json_download_url": f"/generate/download/json/{g.id}",
             "created_at": g.created_at.isoformat() if g.created_at else None
@@ -866,6 +877,13 @@ def api_get_generation(id):
         except Exception:
             pass
 
+    val_summary = {}
+    if gen.validation_summary:
+        try:
+            val_summary = json.loads(gen.validation_summary)
+        except Exception:
+            pass
+
     detail = {
         "id": gen.id,
         "generation_id": gen.id,
@@ -896,6 +914,10 @@ def api_get_generation(id):
         "total_cess": float(gen.total_cess or 0),
         "total_tax": float(gen.total_tax or 0),
         "validation_passed": gen.validation_passed,
+        "snapshot_checksum": gen.snapshot_checksum,
+        "input_count": gen.input_count,
+        "gate_status": gen.gate_status,
+        "validation_summary": val_summary,
         "validation_errors": val_errors,
         "reconciliation_report": recon_report,
         "schema_version": gen.schema_version,
@@ -949,4 +971,115 @@ def api_import_cancel(id):
         return api_response(res, message=res.get('message', 'Import cancelled'))
     except ValueError as e:
         return api_response(error=True, message=str(e), status=400)
+
+
+@api_bp.route('/adapters/readiness', methods=['GET'])
+@login_required
+def api_adapter_readiness():
+    """Return adapter readiness matrix & honesty gate metadata."""
+    from app.adapters.all_adapters import get_adapter_readiness_matrix
+    matrix = get_adapter_readiness_matrix()
+    return api_response(matrix)
+
+
+@api_bp.route('/reconciliation/summary', methods=['GET'])
+@login_required
+def api_reconciliation_summary():
+    """Return authoritative reconciliation summary with bucket categorization and conservation proof."""
+    req_profile_id = request.args.get('profile_id')
+    if req_profile_id:
+        try:
+            target_profile = GSTProfile.query.filter_by(id=int(req_profile_id), user_id=current_user.id).first()
+            if not target_profile:
+                return api_response(error=True, message="Active profile not found", status=404)
+            profile_id = target_profile.id
+        except (ValueError, TypeError):
+            return api_response(error=True, message="Invalid profile_id", status=400)
+    else:
+        profile_id = get_active_profile_id()
+
+    if not profile_id:
+        return api_response(error=True, message="Active profile not found", status=404)
+
+    return_period = request.args.get('return_period') or session.get('return_period', '012025')
+    from app.services.reconciliation_service import get_reconciliation_summary
+    summary = get_reconciliation_summary(profile_id, return_period)
+    return api_response(summary)
+
+
+@api_bp.route('/reconciliation/export', methods=['GET'])
+@login_required
+def api_reconciliation_export():
+    """Export reconciliation report as CSV or JSON with tenant isolation and audit logging."""
+    req_profile_id = request.args.get('profile_id')
+    if req_profile_id:
+        try:
+            target_profile = GSTProfile.query.filter_by(id=int(req_profile_id), user_id=current_user.id).first()
+            if not target_profile:
+                return api_response(error=True, message="Active profile not found", status=404)
+            profile_id = target_profile.id
+        except (ValueError, TypeError):
+            return api_response(error=True, message="Invalid profile_id", status=400)
+    else:
+        profile_id = get_active_profile_id()
+
+    if not profile_id:
+        return api_response(error=True, message="Active profile not found", status=404)
+
+    return_period = request.args.get('return_period') or session.get('return_period', '012025')
+    fmt = request.args.get('format', 'csv').lower()
+
+    # Mandatory AuditLog tracking
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="EXPORT",
+        entity_type="RECONCILIATION_REPORT",
+        entity_id=profile_id,
+        field_name="return_period",
+        new_value=return_period,
+        reason=f"API downloaded reconciliation report for period {return_period} format={fmt}",
+        ip_address=request.remote_addr,
+    )
+    db.session.add(audit)
+    db.session.commit()
+
+    if fmt == 'json':
+        from app.services.reconciliation_service import get_reconciliation_summary
+        return api_response(get_reconciliation_summary(profile_id, return_period))
+
+    from app.services.reconciliation_service import export_reconciliation_csv
+    from flask import Response
+    csv_data = export_reconciliation_csv(profile_id, return_period)
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=reconciliation_report_{return_period}.csv"}
+    )
+
+
+@api_bp.route('/reconciliation/resolve/<int:record_id>', methods=['POST'])
+@login_required
+def api_reconciliation_resolve(record_id):
+    """Persist audited resolution note for a ReconciliationRecord."""
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="Active profile not found", status=404)
+
+    data = request.get_json(silent=True) or request.form
+    status = data.get('status', 'RESOLVED')
+    note = data.get('note', '')
+
+    from app.services.reconciliation_service import resolve_reconciliation_exception
+    record = resolve_reconciliation_exception(
+        record_id=record_id,
+        profile_id=profile_id,
+        user_id=current_user.id,
+        resolution_status=status,
+        resolution_note=note,
+    )
+    if not record:
+        return api_response(error=True, message="Reconciliation record not found", status=404)
+
+    return api_response(record.to_dict(), message="Exception resolved successfully")
+
 

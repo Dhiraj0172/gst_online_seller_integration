@@ -1083,3 +1083,96 @@ def api_reconciliation_resolve(record_id):
     return api_response(record.to_dict(), message="Exception resolved successfully")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Workstream 7 & 12 Endpoints: Job Progress, Retry, Cancel & Health Probes
+# ─────────────────────────────────────────────────────────────────────────────
+
+@api_bp.route('/imports/<int:import_id>/progress', methods=['GET'])
+@api_bp.route('/import/<int:import_id>/progress', methods=['GET'])
+@login_required
+def api_import_progress(import_id):
+    """Retrieve incremental progress, counters, and status for an import job."""
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="Active GST profile not found", status=404)
+
+    from app.services.job_service import get_import_job_progress
+    progress = get_import_job_progress(import_id=import_id, profile_id=profile_id)
+    if not progress:
+        return api_response(error=True, message="Import record not found or access denied", status=404)
+
+    return api_response(progress)
+
+
+@api_bp.route('/imports/<int:import_id>/retry', methods=['POST'])
+@api_bp.route('/import/<int:import_id>/retry', methods=['POST'])
+@login_required
+def api_import_retry(import_id):
+    """Idempotently retry an import job with transaction cleanup and duplicate protection."""
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="Active GST profile not found", status=404)
+
+    from app.services.job_service import retry_import_job
+    try:
+        body = request.get_json(silent=True) or {}
+        stage = bool(body.get('stage', False))
+        result = retry_import_job(
+            import_id=import_id,
+            profile_id=profile_id,
+            user_id=current_user.id,
+            stage=stage
+        )
+        return api_response(result, message=result.get('message', 'Import retry initiated'))
+    except ValueError as exc:
+        err_msg = str(exc)
+        status_code = 403 if "frozen" in err_msg.lower() else (
+            404 if "not found or access denied" in err_msg.lower() else 400
+        )
+        return api_response(error=True, message=err_msg, status=status_code)
+    except Exception as exc:
+        return api_response(error=True, message=f"Retry failed: {str(exc)}", status=500)
+
+
+@api_bp.route('/imports/<int:import_id>/cancel', methods=['POST'])
+@api_bp.route('/import/<int:import_id>/cancel', methods=['POST'])
+@login_required
+def api_import_cancel_job(import_id):
+    """Cancel an in-flight, pending, or staged import job, preserving RawImport records."""
+    profile_id = get_active_profile_id()
+    if not profile_id:
+        return api_response(error=True, message="Active GST profile not found", status=404)
+
+    from app.services.job_service import cancel_import_job
+    try:
+        result = cancel_import_job(
+            import_id=import_id,
+            profile_id=profile_id,
+            user_id=current_user.id
+        )
+        return api_response(result, message=result.get('message', 'Import cancelled successfully'))
+    except ValueError as exc:
+        err_msg = str(exc)
+        status_code = 404 if "not found or access denied" in err_msg.lower() else 400
+        return api_response(error=True, message=err_msg, status=status_code)
+    except Exception as exc:
+        return api_response(error=True, message=f"Cancellation failed: {str(exc)}", status=500)
+
+
+@api_bp.route('/healthz', methods=['GET'])
+def api_healthz():
+    """Fast liveness check probe for container runners."""
+    from app.services import ops_service
+    return jsonify(ops_service.get_liveness_status()), 200
+
+
+@api_bp.route('/readyz', methods=['GET'])
+def api_readyz():
+    """Deep readiness check probe verifying core dependencies (DB, rules, storage, adapters)."""
+    from app.services import ops_service
+    is_ready, details = ops_service.get_readiness_status()
+    status_code = 200 if is_ready else 503
+    return jsonify(details), status_code
+
+
+

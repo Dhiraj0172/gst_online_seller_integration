@@ -52,6 +52,9 @@ class ImportHistory(db.Model):
     error_summary = db.Column(db.Text) # Stored as JSON text
     warning_summary = db.Column(db.Text) # Stored as JSON text
     raw_file_path = db.Column(db.String(512))
+    task_id = db.Column(db.String(128), index=True, nullable=True)
+    processed_rows = db.Column(db.Integer, default=0, nullable=True)
+    error_message = db.Column(db.String(500), nullable=True)
     is_reprocessed = db.Column(db.Boolean, default=False)
     parent_import_id = db.Column(db.Integer, db.ForeignKey('import_histories.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -59,6 +62,41 @@ class ImportHistory(db.Model):
     profile = db.relationship('GSTProfile', back_populates='import_histories')
     raw_imports = db.relationship('RawImport', back_populates='import_history', cascade='all, delete-orphan')
     transactions = db.relationship('Transaction', back_populates='import_history', cascade='all, delete-orphan')
+
+    @property
+    def progress_pct(self) -> float:
+        """Calculate processing completion percentage (0.0 to 100.0)."""
+        if self.processing_status in (self.STATUS_COMPLETED, self.STATUS_PARTIAL, self.STATUS_STAGED):
+            return 100.0
+        if self.total_rows and self.total_rows > 0:
+            count = self.processed_rows if (self.processed_rows is not None and self.processed_rows > 0) else (
+                (self.success_rows or 0) + (self.warning_rows or 0) + (self.error_rows or 0) + (self.skipped_rows or 0)
+            )
+            pct = (float(count) / float(self.total_rows)) * 100.0
+            return min(100.0, max(0.0, round(pct, 1)))
+        return 0.0
+
+    @property
+    def can_retry(self) -> bool:
+        """Return True if import is eligible for retry."""
+        return self.processing_status in (
+            self.STATUS_FAILED,
+            self.STATUS_CANCELLED,
+            self.STATUS_PARTIAL,
+            'REJECTED_UNREADABLE',
+            'REJECTED_INVALID',
+            'REJECTED_DUPLICATE_FILE',
+            'REJECTED_FROZEN'
+        )
+
+    @property
+    def can_cancel(self) -> bool:
+        """Return True if import is in an active state that can be cancelled."""
+        return self.processing_status in (
+            self.STATUS_PENDING,
+            self.STATUS_PROCESSING,
+            self.STATUS_STAGED
+        )
 
     def __repr__(self):
         return f"<ImportHistory {self.id} - {self.platform_name}>"

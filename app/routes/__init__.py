@@ -8,8 +8,9 @@ statement_bp = Blueprint('statement', __name__)
 tcs_bp = Blueprint('tcs', __name__)
 generate_bp = Blueprint('generate', __name__)
 api_bp = Blueprint('api', __name__, url_prefix='/api')
+ops_bp = Blueprint('ops', __name__)
 
-from . import auth, main, profile, import_routes, statement, tcs, generate, api
+from . import auth, main, profile, import_routes, statement, tcs, generate, api, ops
 
 def register_blueprints(app):
     app.register_blueprint(auth_bp)
@@ -20,3 +21,4 @@ def register_blueprints(app):
     app.register_blueprint(tcs_bp)
     app.register_blueprint(generate_bp)
     app.register_blueprint(api_bp)
+    app.register_blueprint(ops_bp)

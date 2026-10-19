@@ -145,7 +145,8 @@ def create_app(config_name=None):
         # Import all models so they are registered with SQLAlchemy
         from .models import (
             User, GSTProfile, ImportHistory, RawImport,
-            Transaction, AuditLog, GSTR1Generation, TCSReconciliation
+            Transaction, AuditLog, GSTR1Generation, TCSReconciliation,
+            ReconciliationRecord
         )
         db.create_all()
         _ensure_schema_compat(app)

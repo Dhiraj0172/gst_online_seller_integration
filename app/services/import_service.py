@@ -248,6 +248,26 @@ def process_import(
 
     result.import_history_id = import_history.id
 
+    # Generation freeze check BEFORE parsing/mutating
+    if not stage:
+        freeze = check_generation_freeze(profile_id, return_period)
+        if freeze:
+            import_history.processing_status = 'FAILED'
+            import_history.error_summary = json.dumps({
+                'counts': {'total_rows': 0, 'success_rows': 0, 'warning_rows': 0, 'error_rows': 1, 'skipped_rows': 0},
+                'errors': [{
+                    'code': 'RETURN_PERIOD_FROZEN',
+                    'message': f"Cannot import directly into return period {return_period}: GSTR-1 has already been finalized (Generation #{freeze.id})."
+                }]
+            })
+            import_history.error_message = f"Return period {return_period} is frozen by finalized GSTR-1 generation #{freeze.id}."
+            import_history.processing_completed_at = datetime.utcnow()
+            db.session.commit() if _internal_commit else db.session.flush()
+            result.status = 'REJECTED_FROZEN'
+            result.stats['status'] = 'FAILED'
+            result.errors.append(f"Return period {return_period} is frozen by finalized GSTR-1 generation #{freeze.id}.")
+            return result
+
     wb = None
     parse_result = None
 
@@ -602,12 +622,21 @@ def process_import(
                     db.session.add(tx)
 
                 if total_rows % 1000 == 0:
+                    import_history.processed_rows = total_rows
                     db.session.flush()
+                    db.session.expire_all()
+                    # Check cooperative cancellation
+                    cur_status = db.session.query(ImportHistory.processing_status).filter_by(id=import_history.id).scalar()
+                    if cur_status == 'CANCELLED':
+                        raise RuntimeError(f"Import #{import_history.id} cancelled during processing.")
 
             # End of batch flush
+            import_history.processed_rows = total_rows
             db.session.flush()
+            db.session.expire_all()
 
         # Step 9: Final flush and ImportHistory bookkeeping
+        import_history.processed_rows = total_rows
         db.session.flush()
 
         counts = {
@@ -690,13 +719,19 @@ def process_import(
                 wb.close()
             except Exception:
                 pass
-        if parse_result and hasattr(parse_result, 'metadata'):
-            _wb_stream = parse_result.metadata.get('_wb_ref')
-            if _wb_stream and hasattr(_wb_stream, 'close'):
+        if parse_result:
+            if hasattr(parse_result, 'rows') and hasattr(parse_result.rows, 'close'):
                 try:
-                    _wb_stream.close()
+                    parse_result.rows.close()
                 except Exception:
                     pass
+            if hasattr(parse_result, 'metadata'):
+                _wb_stream = parse_result.metadata.get('_wb_ref')
+                if _wb_stream and hasattr(_wb_stream, 'close'):
+                    try:
+                        _wb_stream.close()
+                    except Exception:
+                        pass
 
     return result
 
@@ -1098,10 +1133,36 @@ def confirm_import(import_id: int, profile_id: int, user_id: Optional[int] = Non
             }
         raise ValueError(f"Concurrent update conflict on import #{import_id}.")
 
+    # Pre-promotion deduplication: if another import committed matching fingerprints in the meantime,
+    # soft-delete the colliding candidate transactions to guarantee zero duplicate active rows.
+    candidate_fps = [
+        r[0] for r in tenant_query(Transaction, profile_id)
+        .filter_by(import_history_id=import_rec.id, is_staged=True, is_deleted=False)
+        .with_entities(Transaction.row_fingerprint).all()
+        if r[0]
+    ]
+    if candidate_fps:
+        existing_active = find_existing_transactions(profile_id, candidate_fps)
+        if existing_active:
+            colliding_fps = list(existing_active.keys())
+            tenant_query(Transaction, profile_id).filter(
+                Transaction.import_history_id == import_rec.id,
+                Transaction.is_staged == True,
+                Transaction.row_fingerprint.in_(colliding_fps)
+            ).update({
+                'is_deleted': True,
+                'is_staged': False,
+                'deleted_at': datetime.utcnow(),
+                'deleted_by': user_id or import_rec.user_id
+            }, synchronize_session=False)
+            import_rec.skipped_rows = (import_rec.skipped_rows or 0) + len(colliding_fps)
+            import_rec.success_rows = max(0, (import_rec.success_rows or 0) - len(colliding_fps))
+
     # Atomic promotion of candidate transactions
     tenant_query(Transaction, profile_id).filter_by(
         import_history_id=import_rec.id,
-        is_staged=True
+        is_staged=True,
+        is_deleted=False
     ).update({'is_staged': False}, synchronize_session=False)
 
     import_rec.processing_status = final_status

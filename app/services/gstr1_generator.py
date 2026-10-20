@@ -1448,9 +1448,11 @@ def generate_gstr1(
 
     stats = {
         "total_b2b": total_b2b,
+        "total_b2ba": sum(len(b.get("inv", [])) for b in json_data.get("b2ba", [])),
         "total_b2cs": total_b2cs,
         "total_b2cl": total_b2cl,
         "total_cdnr": total_cdnr,
+        "total_cdnra": sum(len(b.get("nt", [])) for b in json_data.get("cdnra", [])),
         "total_cdnur": total_cdnur,
         "total_exp": total_exp,
         "total_nil": total_nil,

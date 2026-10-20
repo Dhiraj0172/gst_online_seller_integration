@@ -278,16 +278,17 @@ def check_b2b_totals(profile_id: int, return_period: str) -> CheckResult:
     gstr1_cess = Decimal('0.00')
 
     gstr1_inv_count = 0
-    for ctin_group in gstr1_data.get('b2b', []):
-        for inv in ctin_group.get('inv', []):
-            gstr1_inv_count += 1
-            for itm in inv.get('itms', []):
-                det = itm.get('itm_det', {})
-                gstr1_taxable += Decimal(str(det.get('txval', 0)))
-                gstr1_cgst += Decimal(str(det.get('camt', 0)))
-                gstr1_sgst += Decimal(str(det.get('samt', 0)))
-                gstr1_igst += Decimal(str(det.get('iamt', 0)))
-                gstr1_cess += Decimal(str(det.get('csamt', 0)))
+    for tbl in ('b2b', 'b2ba'):
+        for ctin_group in gstr1_data.get(tbl, []):
+            for inv in ctin_group.get('inv', []):
+                gstr1_inv_count += 1
+                for itm in inv.get('itms', []):
+                    det = itm.get('itm_det', {})
+                    gstr1_taxable += Decimal(str(det.get('txval', 0)))
+                    gstr1_cgst += Decimal(str(det.get('camt', 0)))
+                    gstr1_sgst += Decimal(str(det.get('samt', 0)))
+                    gstr1_igst += Decimal(str(det.get('iamt', 0)))
+                    gstr1_cess += Decimal(str(det.get('csamt', 0)))
 
     messages = []
     severity = "INFO"
@@ -701,14 +702,16 @@ def check_cdnr_totals(profile_id: int, return_period: str) -> CheckResult:
     gstr1_data = load_transactions(str(pid), rp)
     gstr1_taxable = Decimal('0.00')
 
-    for ctin_group in gstr1_data.get('cdnr', []):
-        for nt in ctin_group.get('nt', []):
-            for itm in nt.get('itms', []):
-                gstr1_taxable += Decimal(str(itm.get('itm_det', {}).get('txval', 0)))
+    for tbl in ('cdnr', 'cdnra'):
+        for ctin_group in gstr1_data.get(tbl, []):
+            for nt in ctin_group.get('nt', []):
+                for itm in nt.get('itms', []):
+                    gstr1_taxable += Decimal(str(itm.get('itm_det', {}).get('txval', 0)))
 
-    for cdnur_entry in gstr1_data.get('cdnur', []):
-        for itm in cdnur_entry.get('itms', []):
-            gstr1_taxable += Decimal(str(itm.get('itm_det', {}).get('txval', 0)))
+    for tbl in ('cdnur', 'cdnura'):
+        for cdnur_entry in gstr1_data.get(tbl, []):
+            for itm in cdnur_entry.get('itms', []):
+                gstr1_taxable += Decimal(str(itm.get('itm_det', {}).get('txval', 0)))
 
     messages = []
     severity = "INFO"

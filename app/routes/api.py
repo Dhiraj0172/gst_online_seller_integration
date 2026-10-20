@@ -1175,4 +1175,68 @@ def api_readyz():
     return jsonify(details), status_code
 
 
+@api_bp.route('/gstr3b/summary', methods=['GET'])
+@login_required
+def api_gstr3b_summary():
+    """GSTR-3B Auto-Draft Summary (Table 3.1, Section 52 TCS credit & Rule 88A offset)."""
+    req_profile_id = request.args.get('profile_id')
+    if req_profile_id:
+        try:
+            profile = GSTProfile.query.filter_by(id=int(req_profile_id), user_id=current_user.id).first()
+            if not profile:
+                return api_response(error=True, message="Profile not found or access denied", status=403)
+            profile_id = profile.id
+        except (ValueError, TypeError):
+            return api_response(error=True, message="Invalid profile ID", status=400)
+    else:
+        profile_id = get_active_profile_id()
+        if not profile_id:
+            return api_response(error=True, message="Active GST profile not found", status=404)
 
+    return_period = request.args.get('return_period') or request.args.get('period') or get_active_return_period(profile_id)
+
+    from app.services.gstr3b_service import generate_gstr3b_summary
+    try:
+        summary = generate_gstr3b_summary(profile_id=profile_id, return_period=return_period)
+        return api_response(data=summary, message="GSTR-3B summary retrieved successfully")
+    except Exception as exc:
+        return api_response(error=True, message=f"Failed generating GSTR-3B summary: {str(exc)}", status=500)
+
+
+@api_bp.route('/cdnr/cross-period-links', methods=['GET'])
+@login_required
+def api_cdnr_cross_period_links():
+    """Cross-period credit note linkage report within tenant profile."""
+    req_profile_id = request.args.get('profile_id')
+    if req_profile_id:
+        try:
+            profile = GSTProfile.query.filter_by(id=int(req_profile_id), user_id=current_user.id).first()
+            if not profile:
+                return api_response(error=True, message="Profile not found or access denied", status=403)
+            profile_id = profile.id
+        except (ValueError, TypeError):
+            return api_response(error=True, message="Invalid profile ID", status=400)
+    else:
+        profile_id = get_active_profile_id()
+        if not profile_id:
+            return api_response(error=True, message="Active GST profile not found", status=404)
+
+    return_period = request.args.get('return_period') or request.args.get('period') or get_active_return_period(profile_id)
+
+    from app.services.cdnr_service import link_cross_period_credit_notes
+    try:
+        result = link_cross_period_credit_notes(profile_id=profile_id, return_period=return_period)
+        return api_response(data=result, message="Cross-period credit note links retrieved successfully")
+    except Exception as exc:
+        return api_response(error=True, message=f"Failed linking credit notes: {str(exc)}", status=500)
+
+
+@api_bp.route('/ops/schema-status', methods=['GET'])
+def api_ops_schema_status():
+    """Idempotent Zero-Loss Schema Status and Drift Inspection."""
+    from app.services.migration_service import inspect_schema_drift
+    try:
+        status_data = inspect_schema_drift()
+        return api_response(data=status_data, message="Schema status inspected successfully")
+    except Exception as exc:
+        return api_response(error=True, message=f"Schema inspection failed: {str(exc)}", status=500)
